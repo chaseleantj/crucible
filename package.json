@@ -1,0 +1,80 @@
+{
+  "name": "crucible",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Blinded A/B tests of coding-agent skills, models, and harnesses",
+  "keywords": [
+    "ab-testing",
+    "coding-agents",
+    "claude-code",
+    "codex",
+    "cursor",
+    "agent-skills",
+    "llm-evaluation",
+    "cli"
+  ],
+  "author": "Chase Lean <chaseleanrocks@gmail.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chaseleantj/crucible.git"
+  },
+  "homepage": "https://github.com/chaseleantj/crucible#readme",
+  "bugs": {
+    "url": "https://github.com/chaseleantj/crucible/issues"
+  },
+  "type": "module",
+  "exports": {
+    "./store": {
+      "types": "./dist/src/store.d.ts",
+      "default": "./dist/src/store.js"
+    }
+  },
+  "bin": {
+    "crucible": "./crucible"
+  },
+  "files": [
+    "crucible",
+    "dist/src/**/*.js",
+    "dist/src/**/*.d.ts",
+    "dist/ui",
+    "docs/*.md",
+    "example.yaml",
+    "examples",
+    "skills",
+    "CREDENTIALS.md"
+  ],
+  "scripts": {
+    "build": "npm run build:cli && npm run build:ui",
+    "build:cli": "tsc",
+    "build:ui": "svelte-check --workspace ui --tsconfig ./tsconfig.json && vite build --config ui/vite.config.ts",
+    "check": "tsc --noEmit",
+    "test": "npm run build && CRUCIBLE_CONFIG=/dev/null node --test dist/test/*.test.js",
+    "dev:ui": "vite --config ui/vite.config.ts",
+    "setup:browsers": "playwright install chromium",
+    "prepack": "rm -rf dist && npm run build"
+  },
+  "dependencies": {
+    "playwright": "^1.62.1",
+    "yaml": "^2.8.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "typescript": "^5.9.3",
+    "@fontsource/manrope": "^5.3.0",
+    "@sveltejs/vite-plugin-svelte": "^5.1.1",
+    "@tsconfig/svelte": "^5.0.8",
+    "svelte": "^5.56.10",
+    "svelte-check": "^4.7.6",
+    "vite": "^6.4.3"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "os": [
+    "darwin"
+  ],
+  "allowScripts": {
+    "esbuild@0.25.12": true
+  }
+}

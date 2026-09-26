@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark light" />
+    <script>
+      // Before the first paint, so the page never flashes the other theme.
+      // lib/theme.svelte.ts owns the choice after this; the key is the same.
+      (() => {
+        let choice = null;
+        try { choice = localStorage.getItem("crucible-theme"); } catch {}
+        document.documentElement.dataset.theme =
+          choice === "light" || choice === "dark" ? choice
+          : matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+      })();
+    </script>
+    <title>crucible</title>
+    <link rel="icon" href="../brand/logo/favicon.ico" sizes="16x16 32x32" />
+    <link rel="icon" href="../brand/logo/favicon.svg" type="image/svg+xml" />
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>

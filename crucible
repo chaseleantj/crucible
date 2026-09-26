@@ -1,0 +1,57 @@
+#!/bin/sh
+# Run blinded A/B tests of coding agents: one to six arms do the same task, each
+# with a different skill, tool, model, or agent, and a blind judge compares them.
+#
+#   crucible run experiment.yaml     prepare, produce, judge, report, and archive in one go
+#   crucible status <run-id> --watch follow a run in progress
+#   crucible ui                      open the dashboard of runs and results
+#
+# Run crucible with no arguments for the full list of commands; each step of a
+# run can also be driven on its own (prepare, start, judge, report, archive).
+
+set -eu
+
+SCRIPT=$0
+while [ -L "$SCRIPT" ]; do
+  SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$SCRIPT")" && pwd)
+  SCRIPT=$(readlink "$SCRIPT")
+  case "$SCRIPT" in
+    /*) ;;
+    *) SCRIPT="$SCRIPT_DIR/$SCRIPT" ;;
+  esac
+done
+TOOL_DIR=$(CDPATH= cd -- "$(dirname -- "$SCRIPT")" && pwd)
+CLI="$TOOL_DIR/dist/src/cli.js"
+
+# In a source checkout dist/ is gitignored, so a pull that changes src/ leaves
+# a build that still enforces the old experiment format. Rebuild whenever a
+# source file is newer than the compiled CLI, so the error messages always
+# describe the current src. An installed package ships dist/ without src/ and
+# never rebuilds.
+SOURCE_CHECKOUT=
+[ -d "$TOOL_DIR/src" ] && SOURCE_CHECKOUT=1
+if [ ! -f "$CLI" ] && [ -z "$SOURCE_CHECKOUT" ]; then
+  echo "crucible: $CLI is missing; reinstall the package" >&2
+  exit 1
+fi
+stale=$(find "$TOOL_DIR/src" -name '*.ts' -newer "$CLI" 2>/dev/null | head -n 1)
+if [ -n "$SOURCE_CHECKOUT" ] && { [ ! -f "$CLI" ] || [ -n "$stale" ]; }; then
+  if ! (cd "$TOOL_DIR" && npm run build:cli --silent >&2); then
+    echo "crucible: build failed; run npm ci && npm run build in $TOOL_DIR" >&2
+    exit 1
+  fi
+fi
+
+# The dashboard is built the same way, and only when it is about to be served.
+UI="$TOOL_DIR/dist/ui/index.html"
+if [ -n "$SOURCE_CHECKOUT" ] && [ "${1:-}" = ui ]; then
+  stale=$(find "$TOOL_DIR/ui" -type f -not -name DESIGN.md -newer "$UI" 2>/dev/null | head -n 1)
+  if [ ! -f "$UI" ] || [ -n "$stale" ]; then
+    if ! (cd "$TOOL_DIR" && npm run build:ui --silent >&2); then
+      echo "crucible: dashboard build failed; run npm ci && npm run build in $TOOL_DIR" >&2
+      exit 1
+    fi
+  fi
+fi
+
+exec node "$CLI" "$@"

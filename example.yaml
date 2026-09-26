@@ -1,0 +1,79 @@
+name: Candidate skill comparison
+# series: example-skill   # group repeated runs of one question; `crucible series example-skill` tallies them
+
+# One to six arms. The first is the one the others are compared against.
+# A label is optional: the default says what the arm varied, and two arms that
+# vary the same thing are a replicate that has to be labelled by hand.
+# A single arm is scored against the rubric alone, with no winner and no margin.
+arms:
+  # Historical benchmark alternative: reuse: {run: ab-12345678, arm: previous-label}
+  - label: without-example-skill
+  - label: with-example-skill
+    candidate:
+      path: ~/.claude/skills/example-skill
+      # replaces: example-skill  # test a variant: the other arms keep the baseline, this one gets this copy
+      # A dependency directly inside a folder named like a configured shared folder
+      # (with shared standards configured, ~/agent-guides/standards/frontend.md) reaches this arm alone under shared/.
+      dependencies: []
+  # - producer: {model: <larger-model>}   # compare models or effort: give each arm its own override
+  # - producer: {effort: high}
+  # - producer: {agent: codex, model: <codex-model>}   # compare harnesses: set model and effort for that agent
+  # - environment: clean   # this arm alone in clean mode; skills.environment is the default
+  # Testing a tool rather than a skill. Each of these is also allowed in the shared producer block.
+  # - producer: {settings: ./rtk-hooks.json}              # a JSON settings file: how hooks reach one arm
+  # - producer: {env: {PATH: /opt/homebrew/bin:$PATH}}    # extra variables; $VAR reads the scrubbed environment
+  # - producer: {setup: graphify build .}                 # run in the project before the producer starts, after any shared setup
+
+source:
+  path: ./example-project
+  include:
+    - package.json
+    - src/**/*
+
+task: Improve the project and run its normal checks.
+
+producer:
+  agent: claude # claude, codex, or cursor; the default for arms that do not name their own
+  timeout: 120m
+
+skills:
+  # realistic: the ordinary skills and shared guidance folders every session has.
+  # clean: this arm's own candidate and its dependencies, and nothing else.
+  # The default for every arm; an arm may set its own environment.
+  environment: realistic
+  # root: ~/.claude/skills   # unset, the root from ~/.config/crucible/config.yaml (see `crucible config`)
+  # shared: true            # the configured shared folders for clean arms too; or list folders for every arm
+  # excludeCategories: []   # skill categories withheld from every arm; replaces the configured list
+  exclude: []               # skill names withheld from every arm, on top of the configured ones
+
+# Critic/reviewer agent definitions, frozen for every arm like skills. The
+# Claude, Codex, and Cursor producers can run these. Codex and Cursor
+# reviewers inherit the producer model and effort.
+# A candidate dependency ending in .md becomes a subagent for that arm alone.
+subagents:
+  # root: ~/.claude/agents
+  exclude: []
+
+# sandbox: false disables the Seatbelt profile; the scrubbed home still applies.
+sandbox: true
+
+# judge: none   # instead of the block below: produce the arms, let the runner capture their
+#               # pages, and report what they cost, with nothing scored or ranked
+judge:
+  agent: claude
+  timeout: 30m
+  rubric: ./rubric.md
+
+# archive: false keeps the finished run out of the archive; `crucible run --no-archive` does it once.
+archive: true
+
+cleanup: manual # manual or automatic
+
+# Claude and Codex tool-access experiments can set an arm producer override:
+# producer:
+#   mcpServers:
+#     blender:
+#       command: /opt/homebrew/bin/uvx
+#       args: [blender-mcp]
+#       env: {DISABLE_TELEMETRY: "true"}
+# Keep sandbox on; reset external application state between producers.

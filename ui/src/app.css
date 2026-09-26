@@ -1,0 +1,420 @@
+/* Tokens — the one place a colour, size, space, radius or duration is written.
+   Two themes share one shape: a cool neutral ground, hairline surfaces, no
+   hue except the semantic ones, and emphasis by inversion (the ink colour as
+   a fill). The mark's orange stays in the mark. Night is the default below; day overrides only the colours.
+   index.html sets data-theme before the first paint; lib/theme keeps it. */
+:root {
+  color-scheme: dark;
+  --bg: #020308;
+  --surface: #0b0d12;
+  --surface-hover: #12151b;
+  --surface-selected: #1a1e26;
+
+  --ink: #eef1f5;
+  --ink-hover: #c9ced6; /* an ink fill under the pointer */
+  --muted: #9aa1ad; /* 7.9:1 on --bg */
+  --faint: #7a818e; /* 5.3:1 on --bg, the floor for text */
+
+  --hairline: #1a1e25;
+  --hairline-strong: #2a2f38;
+  --control-border: #60666f; /* 3:1 on --surface: a control's edge must be findable */
+  --frame: #1a1e25; /* around captures: a page with a white ground needs a firmer edge by day */
+
+  /* Semantic only: trouble, attention, and a healthy running agent. */
+  --danger: hsl(4 72% 66%);
+  --danger-strong: hsl(4 72% 72%);
+  --danger-soft: hsl(4 40% 14%);
+  --warn: hsl(38 82% 62%);
+  --ok: hsl(150 38% 58%);
+
+  /* Focus is neutral: a ring for the keyboard, a firmer edge for a field. */
+  --focus: var(--muted);
+  --field-focus: var(--muted);
+
+  /* Neutral data: a bar's track and fill, and the best cell of a row. */
+  --meter-track: var(--hairline-strong);
+  --meter-fill: var(--faint);
+  --best: var(--surface-selected);
+
+  /* The shade at the edge of a table that scrolls sideways. */
+  --edge-shade: hsl(220 20% 70% / 0.14);
+  --shadow-dialog: 0 24px 80px hsl(220 30% 2% / 0.8);
+  --scrim: hsl(220 24% 4% / 0.7);
+  /* The chevron of a select, stroked in --muted. */
+  --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 16 16' fill='none' stroke='%239aa1ad' stroke-width='1.6'%3E%3Cpath d='M4 6.5 8 10.5 12 6.5'/%3E%3C/svg%3E");
+  /* A ticked box's mark, stroked in --bg on its ink fill; a half-ticked one's dash. */
+  --tick: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23020308' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 8.5 6.8 11.2 12 5'/%3E%3C/svg%3E");
+  --dash: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23020308' stroke-width='2.2' stroke-linecap='round'%3E%3Cpath d='M4.5 8h7'/%3E%3C/svg%3E");
+
+  /* The mark's tones, from brand/logo (the 16 cut). The melt is the only
+     hue outside the semantic ones, and it lives only in the mark. */
+  --mark-rim: #eef1f5;
+  --mark-lip: #959ca8;
+  --mark-inner: #5a616d;
+  --mark-melt: #ff6b1a;
+
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 24px;
+  --s-6: 32px;
+  --s-7: 48px;
+  --s-8: 64px;
+
+  /* Type: four roles. Numbers use the same face with tabular figures. */
+  --text-page: 600 22px/1.25 var(--font);
+  --text-heading: 600 15px/1.4 var(--font);
+  --text-body: 400 14px/1.5 var(--font);
+  --text-meta: 400 13px/1.45 var(--font);
+  --font: "Manrope", -apple-system, system-ui, sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, monospace;
+
+  --radius: 12px;
+  --radius-small: 8px;
+  --radius-control: 6px; /* buttons, fields, menus: squared, not pills */
+  --radius-pill: 999px;
+
+  --control: 32px;
+  --topbar: 52px;
+  --row: 40px;
+  --content: 1240px;
+
+  --speed: 150ms;
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Day: a cool paper ground with white surfaces, ink near black. Semantic
+   colours are darkened to hold 4.5:1 on every surface, not inverted. */
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f5f6f8;
+  --surface: #ffffff;
+  --surface-hover: #eceef2;
+  --surface-selected: #e3e6eb;
+
+  --ink: #0d1016;
+  --ink-hover: #343a45;
+  --muted: #4f5663; /* 6.8:1 on --bg */
+  --faint: #646b77; /* 5.0:1 on --bg */
+
+  --hairline: #e1e4e9;
+  --hairline-strong: #b4bac4;
+  --control-border: #838a94; /* 3:1 on --bg and white */
+  --frame: #d3d7de;
+
+  --danger: hsl(4 68% 44%);
+  --danger-strong: hsl(4 68% 36%);
+  --danger-soft: hsl(4 80% 96%);
+  --warn: hsl(32 92% 31%);
+  --ok: hsl(150 55% 27%);
+
+  --meter-track: var(--hairline);
+  --meter-fill: var(--faint); /* 4.3:1 on its track */
+
+  --edge-shade: hsl(220 30% 20% / 0.12);
+  --shadow-dialog: 0 24px 80px hsl(220 30% 20% / 0.18);
+  --scrim: hsl(220 24% 20% / 0.32);
+  --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 16 16' fill='none' stroke='%234f5663' stroke-width='1.6'%3E%3Cpath d='M4 6.5 8 10.5 12 6.5'/%3E%3C/svg%3E");
+  --tick: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23f5f6f8' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 8.5 6.8 11.2 12 5'/%3E%3C/svg%3E");
+  --dash: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23f5f6f8' stroke-width='2.2' stroke-linecap='round'%3E%3Cpath d='M4.5 8h7'/%3E%3C/svg%3E");
+
+  --mark-rim: #0b0d12;
+  --mark-lip: #7d848f;
+  --mark-inner: #7d848f;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root { --speed: 0ms; }
+  *, *::before, *::after { animation-duration: 0ms !important; animation-iteration-count: 1 !important; }
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font: var(--text-body);
+  -webkit-font-smoothing: antialiased;
+  font-variant-numeric: tabular-nums;
+}
+
+button, input, select { font: inherit; color: inherit; background: none; border: none; }
+button { cursor: pointer; }
+a { color: inherit; text-decoration: none; }
+img { display: block; }
+::selection { background: var(--ink); color: var(--bg); }
+
+/* Only for the keyboard. A text field matches :focus-visible on a click
+   too, so it shows focus by its own edge instead of a ring. */
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: var(--radius-control);
+}
+
+/* Type roles */
+.t-page { font: var(--text-page); letter-spacing: -0.015em; }
+.t-heading { font: var(--text-heading); letter-spacing: -0.005em; }
+.t-body { font: var(--text-body); }
+.t-meta { font: var(--text-meta); color: var(--muted); }
+code, .code { font-family: var(--mono); font-size: 13px; }
+
+.num { text-align: right; font-variant-numeric: tabular-nums; }
+.clip { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+
+/* Layout */
+.page {
+  width: 100%;
+  max-width: var(--content);
+  margin: 0 auto;
+  padding: var(--s-5) var(--s-5) var(--s-8);
+}
+@media (max-width: 640px) {
+  .page { padding: var(--s-4) var(--s-4) var(--s-7); }
+}
+
+.section { margin-top: var(--s-6); }
+.section-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  min-height: var(--control);
+  margin-bottom: var(--s-3);
+}
+.section-head .count { color: var(--muted); font: var(--text-heading); }
+.section-head .spacer { flex: 1; }
+
+.surface {
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius);
+}
+
+/* Buttons: one height, one radius. An outline by default; quiet (no edge
+   until hovered) for chrome such as icons and menus; primary in ink. */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s-2);
+  height: var(--control);
+  padding: 0 var(--s-3);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-control);
+  font: var(--text-meta);
+  color: var(--ink);
+  white-space: nowrap;
+  transition: background var(--speed) var(--ease), border-color var(--speed) var(--ease);
+}
+.btn:hover { background: var(--surface-hover); border-color: var(--muted); }
+.btn.square { width: var(--control); padding: 0; }
+.btn:disabled, .btn[aria-disabled="true"] { opacity: 0.45; cursor: not-allowed; }
+.btn:disabled:hover, .btn[aria-disabled="true"]:hover { background: none; border-color: var(--control-border); }
+.btn.quiet { border-color: transparent; color: var(--muted); }
+.btn.quiet:hover { border-color: transparent; color: var(--ink); }
+.btn.quiet:disabled:hover, .btn.quiet[aria-disabled="true"]:hover { border-color: transparent; color: var(--muted); }
+/* The page's one primary action: inverted, as a chosen segment is. */
+.btn-primary { background: var(--ink); color: var(--bg); border-color: var(--ink); font-weight: 600; }
+.btn-primary:hover { background: var(--ink-hover); border-color: var(--ink-hover); }
+/* Quiet until meant: red only on hover, so it never rivals the primary action. */
+.btn-danger { color: var(--muted); }
+.btn-danger:hover { color: var(--danger); border-color: var(--danger); background: var(--danger-soft); }
+.btn-danger.solid { background: var(--danger); border-color: var(--danger); color: var(--bg); font-weight: 600; }
+.btn-danger.solid:hover { background: var(--danger-strong); border-color: var(--danger-strong); }
+
+/* Segmented control, for a tiny set of exclusive options (Captures or Live). */
+.segmented {
+  display: inline-flex;
+  height: var(--control);
+  padding: 2px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-control);
+}
+.segmented button {
+  padding: 0 var(--s-3);
+  border-radius: 4px;
+  font: var(--text-meta);
+  color: var(--muted);
+}
+.segmented button:hover { color: var(--ink); }
+.segmented.icons button { display: grid; place-items: center; width: 30px; padding: 0; }
+.segmented button[aria-pressed="true"] { background: var(--ink); color: var(--bg); font-weight: 600; }
+
+/* Tabs, for filters over one list: plain words, the chosen one in ink on an
+   ink rule, each with its count. */
+.tabs { display: flex; align-items: stretch; gap: var(--s-5); height: var(--control); }
+.tabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  font: var(--text-meta);
+  color: var(--muted);
+  white-space: nowrap;
+  box-shadow: inset 0 -2px 0 transparent;
+  transition: color var(--speed) var(--ease), box-shadow var(--speed) var(--ease);
+}
+.tabs button:hover { color: var(--ink); }
+.tabs button[aria-pressed="true"] { color: var(--ink); font-weight: 600; box-shadow: inset 0 -2px 0 var(--ink); }
+.tabs .n { color: var(--faint); font-weight: 400; }
+
+/* A checkbox: a findable edge at rest, an ink fill when ticked. */
+input[type="checkbox"] {
+  appearance: none;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  border: 1.5px solid var(--control-border);
+  border-radius: 4px;
+  background: transparent center / 14px no-repeat;
+  cursor: pointer;
+  transition: border-color var(--speed) var(--ease), background-color var(--speed) var(--ease);
+}
+input[type="checkbox"]:hover { border-color: var(--muted); }
+input[type="checkbox"]:checked { background-color: var(--ink); background-image: var(--tick); border-color: var(--ink); }
+input[type="checkbox"]:indeterminate { background-color: var(--ink); background-image: var(--dash); border-color: var(--ink); }
+input[type="checkbox"]:focus-visible { outline-offset: 1px; }
+
+.field {
+  height: var(--control);
+  padding: 0 var(--s-3);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  font: var(--text-meta);
+  color: var(--ink);
+  transition: border-color var(--speed) var(--ease);
+}
+select.field {
+  padding-right: var(--s-6);
+  appearance: none;
+  background: var(--surface) var(--chevron) no-repeat right 12px center;
+  cursor: pointer;
+}
+.field::placeholder { color: var(--faint); }
+.field:hover { border-color: var(--muted); }
+.field:focus { outline: none; border-color: var(--field-focus); }
+
+/* A confirmation over the page: a question, what it removes, Cancel first. */
+.confirm {
+  margin: auto;
+  width: min(440px, calc(100vw - 2 * var(--s-4)));
+  padding: var(--s-5);
+  color: var(--ink);
+  box-shadow: var(--shadow-dialog);
+  border-color: var(--hairline-strong);
+}
+.confirm::backdrop { background: var(--scrim); }
+.confirm p { margin-top: var(--s-2); color: var(--muted); overflow-wrap: anywhere; }
+.confirm .error { color: var(--danger); }
+.confirm .actions { display: flex; justify-content: flex-end; gap: var(--s-2); margin-top: var(--s-5); }
+
+/* Tables: 36px rows, quiet header, numbers right-aligned. */
+/* A table wider than its column scrolls inside it, and a soft edge shows
+   there is more: the cover gradients scroll with the content, the shade
+   stays put, so the shade shows only where content is hidden. */
+.table-wrap {
+  overflow-x: auto;
+  background:
+    linear-gradient(90deg, var(--bg) 40%, transparent) left / 32px 100% no-repeat local,
+    linear-gradient(270deg, var(--bg) 40%, transparent) right / 32px 100% no-repeat local,
+    linear-gradient(90deg, var(--edge-shade), transparent) left / 16px 100% no-repeat scroll,
+    linear-gradient(270deg, var(--edge-shade), transparent) right / 16px 100% no-repeat scroll;
+}
+.surface .table-wrap {
+  background-color: transparent;
+  background-image:
+    linear-gradient(90deg, var(--surface) 40%, transparent),
+    linear-gradient(270deg, var(--surface) 40%, transparent),
+    linear-gradient(90deg, var(--edge-shade), transparent),
+    linear-gradient(270deg, var(--edge-shade), transparent);
+}
+table { border-collapse: collapse; width: 100%; font: var(--text-meta); }
+th {
+  text-align: left;
+  font-weight: 400;
+  color: var(--muted);
+  padding: 0 var(--s-3) var(--s-2);
+  border-bottom: 1px solid var(--hairline-strong);
+  white-space: nowrap;
+}
+td {
+  height: 36px;
+  padding: var(--s-2) var(--s-3);
+  border-bottom: 1px solid var(--hairline);
+  color: var(--ink);
+  vertical-align: top;
+}
+th:first-child, td:first-child { padding-left: 0; }
+th:last-child, td:last-child { padding-right: 0; }
+tr:last-child td { border-bottom: none; }
+th.num, td.num { text-align: right; white-space: nowrap; }
+
+/* The winner's name: the one inverted mark on a page. */
+.winner-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 var(--s-2);
+  border-radius: var(--radius-pill);
+  background: var(--ink);
+  color: var(--bg);
+  font: 600 12px/1 var(--font);
+}
+
+.tone-ok { color: var(--ok); }
+.tone-warn { color: var(--warn); }
+.tone-danger { color: var(--danger); }
+.tone-done { color: var(--muted); }
+
+.skeleton {
+  background: var(--surface);
+  border-radius: var(--radius-small);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+@keyframes pulse { 50% { opacity: 0.5; } }
+
+.sr-only {
+  position: absolute; width: 1px; height: 1px; overflow: hidden;
+  clip: rect(0 0 0 0); white-space: nowrap;
+}
+
+/* An inline meter: a neutral track, filled to --value (0 to 1). */
+.meter {
+  display: inline-block;
+  flex: none;
+  width: 64px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--meter-track);
+  overflow: hidden;
+  vertical-align: middle;
+}
+.meter > span { display: block; height: 100%; width: calc(var(--value, 0) * 100%); border-radius: 2px; background: var(--meter-fill); }
+/* Past the scale's end: full, with an ink cap saying the bar was cut short. */
+.meter.over > span { background: linear-gradient(to right, var(--meter-fill) calc(100% - 3px), var(--ink) 0); }
+
+/* A state dot beside its word: never colour alone. */
+.dot { display: inline-block; flex: none; width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+.dot.pulse { animation: pulse 1.6s ease-in-out infinite; }
+
+/* The row the keyboard or the page has selected: an ink edge. */
+tr.current td { background: var(--surface-selected); }
+tr.current td:first-child { box-shadow: inset 2px 0 0 var(--ink); }
+
+.kbd {
+  display: inline-grid;
+  place-items: center;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 var(--s-1);
+  border: 1px solid var(--hairline-strong);
+  border-bottom-width: 2px;
+  border-radius: 6px;
+  font: 600 12px/1 var(--font);
+  color: var(--ink);
+}
+
+.inline-link { font: inherit; color: var(--ink); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--faint); }
+.inline-link:hover { text-decoration-color: currentColor; }
