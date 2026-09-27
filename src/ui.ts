@@ -2,12 +2,14 @@ import { execFile } from "node:child_process";
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { createReadStream, readFileSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { UserError } from "./errors.js";
 import { isFile, isReallyWithin, isWithin, listDirs } from "./scan-files.js";
 import { contentType, resolveInside } from "./serve.js";
 import { DeleteError, deleteEach, scanExperiments, storeRoots, type StoreRoots } from "./store.js";
+import { dashboardKey, dashboardLoginUrl } from "./ui-key.js";
+import { ARTIFACT_VIEW_FLAG as VIEWER_FLAG, artifactPage } from "./artifact-view.js";
 
 /**
  * `crucible ui`: the dashboard's built assets, a JSON API over the store, and
@@ -69,7 +71,7 @@ const DASHBOARD_POLICY = "frame-src 'self'";
  * An HTML file asked for with this query parameter, as the dashboard's
  * viewer does, gets VIEWER_BRIDGE injected.
  */
-export const VIEWER_FLAG = "crucible-viewer";
+export { VIEWER_FLAG };
 
 /**
  * The one part of the viewer that runs inside an output page, and the
@@ -116,23 +118,28 @@ function withViewerBridge(page: Buffer): Buffer {
 }
 
 /**
- * An SVG in the viewer, centred at its own size on a plain page: opened
- * bare, a small icon sits in the corner of a window-sized frame and looks
- * like nothing loaded. The image is the same file, fetched without the flag.
- */
-function svgPage(name: string): string {
-  const src = encodeURIComponent(name).replace(/'/g, "%27");
-  return `<!doctype html><meta charset="utf-8"><title>${name.replace(/[<&]/g, "")}</title>`
-    + `<style>html,body{height:100%;margin:0}body{display:grid;place-items:center;background:#fff}img{max-width:100%;max-height:100%}</style>`
-    + `<img src="./${src}" alt="">`;
-}
-
-/**
  * Every action carries this header. A page elsewhere, sandboxed outputs
  * included, cannot send it without a CORS preflight, which this server never
  * grants.
  */
 export const ACTION_HEADER = "x-crucible";
+
+/** The cookie that holds the dashboard key. */
+const KEY_COOKIE = "crucible_key";
+
+function cookie(request: IncomingMessage, name: string): string | null {
+  for (const part of (request.headers.cookie ?? "").split(";")) {
+    const [found, ...value] = part.trim().split("=");
+    if (found === name) return value.join("=");
+  }
+  return null;
+}
+
+function sameSecret(given: string, expected: string): boolean {
+  const a = Buffer.from(given);
+  const b = Buffer.from(expected);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
 
 /** Room for a delete of every run in a large archive, by path. */
 const MAX_BODY_BYTES = 1024 * 1024;
@@ -160,21 +167,24 @@ export async function uiCommand(args: string[]): Promise<void> {
     }
     throw error;
   }
-  const url = `http://127.0.0.1:${port}/`;
+  const url = dashboardLoginUrl(`http://127.0.0.1:${port}`);
   process.stdout.write(`Dashboard: ${url}\nResults: ${archiveRoot}\nRuns: ${runsRoot}\nPress Ctrl-C to stop.\n`);
   if (open) execFile("open", [url]);
 }
 
 export interface UiOptions extends StoreRoots {
   assetsDir?: string;
+  /** The key a browser signs in with; this machine's own unless a test gives one. */
+  key?: string;
   /** Shows a path in Finder; replaced in tests. */
   reveal?: (path: string) => Promise<void>;
 }
 
 export function createUiServer(options: UiOptions): Server {
   const files = fileTokens(randomBytes(32));
+  const key = options.key ?? dashboardKey();
   const server = createServer((request, response) => {
-    handle(options, files, server, request, response).catch((error: unknown) => {
+    handle(options, key, files, server, request, response).catch((error: unknown) => {
       if (!response.headersSent) sendJson(response, 500, { error: error instanceof Error ? error.message : String(error) });
       else response.destroy();
     });
@@ -193,10 +203,26 @@ export function listenUi(server: Server, port: number): Promise<number> {
   });
 }
 
-async function handle(options: UiOptions, files: FileTokens, server: Server, request: IncomingMessage, response: ServerResponse): Promise<void> {
+async function handle(options: UiOptions, key: string, files: FileTokens, server: Server, request: IncomingMessage, response: ServerResponse): Promise<void> {
   const { pathname, searchParams } = new URL(request.url ?? "/", "http://localhost");
   if (!addressedToUs(server, request, pathname)) {
     sendJson(response, 403, { error: "This server only answers requests from its own page." });
+    return;
+  }
+  // Signing in: the key becomes a cookie scripts cannot read and other sites
+  // cannot send, and leaves the address bar. The fragment, the route, survives.
+  if (request.method === "GET" && searchParams.has("key")) {
+    if (!sameSecret(searchParams.get("key") ?? "", key)) {
+      sendJson(response, 403, { error: "That is not this dashboard's key. Open it with crucible ui." });
+      return;
+    }
+    response.writeHead(303, { Location: pathname, "Set-Cookie": `${KEY_COOKIE}=${key}; Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000`, "Cache-Control": "no-store" }).end();
+    return;
+  }
+  // The data and every action need the key. The page itself and its assets
+  // hold nothing, and output files carry tokens that only the data hands out.
+  if ((pathname.startsWith("/api/") || request.method === "POST") && !sameSecret(cookie(request, KEY_COOKIE) ?? "", key)) {
+    sendJson(response, 401, { error: "Open the dashboard with crucible ui, which signs this browser in." });
     return;
   }
   const roots = { archiveRoot: resolve(options.archiveRoot), runsRoot: resolve(options.runsRoot) };
@@ -251,8 +277,9 @@ async function handle(options: UiOptions, files: FileTokens, server: Server, req
     const scope = file && fileScope(roots, file);
     const served = scope && files.opens(token, scope) ? indexed(file) : null;
     const viewed = served !== null && searchParams.has(VIEWER_FLAG);
-    if (viewed && contentType(served).startsWith("image/svg+xml")) {
-      sendHtml(request, response, withViewerBridge(Buffer.from(svgPage(basename(served)))), { "Content-Security-Policy": FILE_POLICY, "Access-Control-Allow-Origin": "null" });
+    const presentation = viewed ? await artifactPage(served) : null;
+    if (presentation !== null) {
+      sendHtml(request, response, withViewerBridge(Buffer.from(presentation)), { "Content-Security-Policy": FILE_POLICY, "Access-Control-Allow-Origin": "null" });
       return;
     }
     const bridged = viewed && contentType(served).startsWith("text/html");

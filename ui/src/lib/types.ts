@@ -123,7 +123,7 @@ export interface Question {
   split: boolean;
 }
 
-export type AgentHealth = "working" | "quiet" | "stalled" | "near timeout";
+export type AgentHealth = "preparing" | "working" | "quiet" | "stalled" | "near timeout";
 
 export interface LiveAgent {
   state: "ready" | "running" | "complete" | "failed" | "stopped";

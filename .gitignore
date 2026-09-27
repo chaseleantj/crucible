@@ -3,3 +3,7 @@ dist/
 *.tgz
 .scratch/
 .DS_Store
+__pycache__/
+
+# Local session notes; never include in a source release.
+/HANDOFF.md

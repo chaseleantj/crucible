@@ -1,6 +1,7 @@
 import { mkdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { Browser } from "playwright";
+import { ARTIFACT_VIEW_FLAG, isMarkdown, isViewableArtifact } from "./artifact-view.js";
 import { changedPaths } from "./baseline.js";
 import { UserError, errorMessage } from "./errors.js";
 import { removeTree } from "./files.js";
@@ -15,8 +16,7 @@ import type { PageShot, ResolvedRun, ShotIndex } from "./types.js";
 const PAGE_TIMEOUT_MS = 20_000;
 /** Tall enough to lay a page out; the pictures themselves are full-page. */
 const VIEWPORT_HEIGHT = 900;
-const PAGE_FILES = /\.html?$/i;
-const TEXT_FILES = /\.(md|markdown|txt)$/i;
+const TEXT_FILES = /\.txt$/i;
 
 /** What one arm changed, split into the pages the runner can open and the text it cannot render. */
 interface ArmPages {
@@ -27,7 +27,7 @@ interface ArmPages {
 /**
  * The pictures for a run with no judge. The runner serves each arm's own work
  * as static files, exactly as it serves the judge's copies, and opens every
- * HTML page the arm changed at both viewports. A page that needs a build or a
+ * HTML, SVG, and Markdown file the arm changed at both viewports. A page that needs a build or a
  * dev server first shows only what its source file shows, which is why a judged
  * run lets the judge take its own pictures.
  * Nothing here fails the run — a page that will not load gets its reason in the
@@ -60,7 +60,7 @@ export async function captureRun(run: ResolvedRun): Promise<ShotIndex> {
   };
   await resetShots(run.runDir);
   if (labels.every((label) => changed.get(label)!.pages.length === 0)) {
-    index.skipped = "No arm changed an HTML page; the runner pictures pages only, so Markdown and code outputs are listed rather than rendered";
+    index.skipped = "No arm changed an HTML, SVG, or Markdown file; other outputs are listed rather than rendered";
   } else {
     const failure = await captureArms(run, captureDir, labels, changed, index);
     if (failure) index.skipped = failure;
@@ -104,14 +104,16 @@ async function captureArms(
 /** One page at both viewports; a viewport that fails leaves null and its reason. */
 async function capturePage(browser: Browser, baseUrl: string, artifact: string, stem: string, runDir: string): Promise<PageShot> {
   const shot: PageShot = { page: artifact, artifact, desktop: null, phone: null };
+  if (isMarkdown(artifact)) shot.rendered = "markdown";
   const errors: string[] = [];
-  const url = new URL(artifact.split("/").map(encodeURIComponent).join("/"), baseUrl).href;
+  const url = new URL(artifact.split("/").map(encodeURIComponent).join("/"), baseUrl);
+  url.searchParams.set(ARTIFACT_VIEW_FLAG, "");
   for (const [viewport, width] of Object.entries(VIEWPORT_WIDTHS) as Array<[keyof typeof VIEWPORT_WIDTHS, number]>) {
     const context = await browser.newContext({ viewport: { width, height: VIEWPORT_HEIGHT } });
     const target = `${stem}-${viewport}.png`;
     try {
       const page = await context.newPage();
-      const response = await page.goto(url, { waitUntil: "load", timeout: PAGE_TIMEOUT_MS });
+      const response = await page.goto(url.href, { waitUntil: "load", timeout: PAGE_TIMEOUT_MS });
       if (!response?.ok()) throw new Error(`the page answered ${response ? response.status() : "nothing"}`);
       // The full height, never the full width: a deck whose slides sit side by
       // side off-screen would otherwise widen the picture to all of them.
@@ -133,9 +135,9 @@ async function changedFiles(run: ResolvedRun, label: string, armDir: string): Pr
   const kept: ArmPages = { pages: [], text: [] };
   const paths = await changedPaths(run, producerOf(run.assignment, label));
   for (const path of paths) {
-    if (!PAGE_FILES.test(path) && !TEXT_FILES.test(path)) continue;
+    if (!isViewableArtifact(path) && !TEXT_FILES.test(path)) continue;
     if (!(await stat(join(armDir, path)).catch(() => null))?.isFile()) continue;
-    (PAGE_FILES.test(path) ? kept.pages : kept.text).push(path);
+    (isViewableArtifact(path) ? kept.pages : kept.text).push(path);
   }
   return kept;
 }

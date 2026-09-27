@@ -29,9 +29,10 @@ export async function readRunState(runDir: string): Promise<RunView> {
   return readJson<RunView>(join(runDir, VIEW_FILE));
 }
 
-export async function setRunState(runDir: string, state: RunState): Promise<RunView> {
+export async function setRunState(runDir: string, state: RunState, expected?: RunState): Promise<RunView> {
   return withRunLock(runDir, async () => {
     const view = await readRunState(runDir);
+    if (expected !== undefined && view.state !== expected) return view;
     view.state = state;
     view.updatedAt = new Date().toISOString();
     await writeJson(join(runDir, VIEW_FILE), view);
@@ -56,6 +57,7 @@ export async function updateProducer(runDir: string, producerId: string, update:
     const view = await readRunState(runDir);
     const current = view.producers[producerId];
     if (!current) throw new Error(`Unknown producer: ${producerId}`);
+    if (current.state === "stopped") return view;
     view.producers[producerId] = { ...current, ...update };
     view.updatedAt = new Date().toISOString();
     await writeJson(join(runDir, VIEW_FILE), view);
@@ -77,6 +79,7 @@ export async function resetJudge(runDir: string): Promise<RunView> {
 export async function updateJudge(runDir: string, update: Partial<ProducerStatus>): Promise<RunView> {
   return withRunLock(runDir, async () => {
     const view = await readRunState(runDir);
+    if (view.judge?.state === "stopped") return view;
     view.judge = { ...(view.judge ?? initialProducerStatus()), ...update };
     view.updatedAt = new Date().toISOString();
     await writeJson(join(runDir, VIEW_FILE), view);

@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { basename, dirname, extname, resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
-import { ISOLATION_VARIABLES } from "./adapters.js";
+import { BROKER_ENVIRONMENT_VARIABLES, ISOLATION_VARIABLES } from "./adapters.js";
 import { UserError } from "./errors.js";
 import {
   optionalBoolean, optionalObject, optionalString, optionalStringArray, requireObject, requireString, requireStringArray,
@@ -9,18 +9,18 @@ import {
 } from "./fields.js";
 import { slug } from "./slug.js";
 import { loadUserConfig, type UserConfig } from "./user-config.js";
-import { AGENTS, type AgentIdentity, type AgentName, type ArmConfig, type ArmOverride, type ExperimentConfig, type JudgeConfig, type ProducerConfig, type McpServerConfig, type SkillEnvironment, type SkillsConfig } from "./types.js";
+import { AGENTS, type AgentIdentity, type AgentName, type ArmConfig, type ArmOverride, type ExperimentConfig, type JudgeConfig, type ProducerConfig, type McpServerConfig, type RuntimeConfig, type SkillEnvironment, type SkillsConfig } from "./types.js";
 
 const DEFAULT_PRODUCER_TIMEOUT = "120m";
 const DEFAULT_JUDGE_TIMEOUT = "30m";
 /** What `judge:` says to run the outputs without a judgment. */
 const NO_JUDGE = "none";
-/** Beyond six arms one judge cannot compare fairly, and the judge's letters run out. */
-export const MAX_ARMS = 6;
+export const MAX_ARMS = 10;
 /** One arm is a rubric score with nothing to compare it against, which is still a result. */
 export const MIN_ARMS = 1;
-const TOP_LEVEL_KEYS = new Set(["name", "series", "arms", "source", "task", "producer", "skills", "subagents", "sandbox", "judge", "archive", "cleanup"]);
-const ARM_KEYS = new Set(["label", "candidate", "producer", "environment", "reuse"]);
+const TOP_LEVEL_KEYS = new Set(["name", "series", "arms", "source", "task", "producer", "skills", "subagents", "runtime", "sandbox", "judge", "archive", "cleanup"]);
+const ARM_KEYS = new Set(["label", "candidate", "producer", "environment", "reuse", "task", "inputs"]);
+const DEFAULT_RUNTIME: RuntimeConfig = { concurrency: 2, cpus: 2, memoryMb: 4096 };
 /** What a judge block may set; the producer block adds the overrides an arm can also carry. */
 const JUDGE_KEYS = new Set(["agent", "model", "effort", "timeout", "rubric"]);
 const OVERRIDE_KEYS = new Set(["agent", "model", "effort", "settings", "env", "setup", "mcpServers"]);
@@ -54,6 +54,7 @@ function resolveConfig(value: ObjectValue, baseDir: string, user: UserConfig): E
   const skills = optionalObject(value.skills, "skills");
   const subagents = optionalObject(value.subagents, "subagents");
   const judge = parseJudge(value.judge, baseDir);
+  assertGuestCompatible(optionalBoolean(value.sandbox, "sandbox") ?? true, user.nodeModules);
 
   const include = requireStringArray(source.include, "source.include");
   if (include.length === 0) {
@@ -101,11 +102,41 @@ function resolveConfig(value: ObjectValue, baseDir: string, user: UserConfig): E
       exclude: unique([...user.subagents.exclude, ...optionalStringArray(subagents.exclude, "subagents.exclude")]),
     },
     nodeModules: user.nodeModules,
-    sandbox: optionalBoolean(value.sandbox, "sandbox") ?? true,
+    sandbox: true,
+    runtime: parseRuntime(value.runtime),
     judge,
     archive: optionalBoolean(value.archive, "archive") ?? true,
     cleanup,
   };
+}
+
+/** Reject old host-execution settings instead of silently changing their meaning. */
+export function assertGuestCompatible(sandbox: boolean, nodeModules: string | null): void {
+  if (sandbox === false) throw new UserError("sandbox: false is no longer supported: every run uses a Harbor Linux guest. Remove sandbox; there is no host execution fallback.");
+  if (nodeModules) throw new UserError("nodeModules cannot share host packages with a Linux guest. Remove nodeModules from your Crucible config and install dependencies with producer.setup (for example npm ci), or add them to the runtime image.");
+}
+
+function parseRuntime(value: unknown): RuntimeConfig {
+  const runtime = optionalObject(value, "runtime");
+  const unknown = Object.keys(runtime).filter((key) => !Object.hasOwn(DEFAULT_RUNTIME, key));
+  if (unknown.length) throw new UserError(`runtime may only set concurrency, cpus, memoryMb, not ${unknown.join(", ")}`);
+  const parsed = { ...DEFAULT_RUNTIME };
+  for (const key of Object.keys(DEFAULT_RUNTIME) as Array<keyof RuntimeConfig>) {
+    const item = runtime[key];
+    if (item === undefined) continue;
+    if (typeof item !== "number" || !Number.isSafeInteger(item) || item < 1) throw new UserError(`runtime.${key} must be a positive integer`);
+    parsed[key] = item;
+  }
+  return parsed;
+}
+
+/** Old records use the same runtime defaults when explicitly resumed. */
+export function runtimeFor(config: Pick<ExperimentConfig, "runtime">): RuntimeConfig {
+  return config.runtime ?? { ...DEFAULT_RUNTIME };
+}
+
+export function taskFor(config: Pick<ExperimentConfig, "task">, arm: Pick<ArmConfig, "task">): string {
+  return arm.task ?? config.task;
 }
 
 function pathOr(path: string | undefined, baseDir: string, fallback: string): string {
@@ -181,7 +212,7 @@ function parseArms(raw: unknown, baseDir: string, shared: ProducerConfig): ArmCo
     throw new UserError(`arms must be a list of ${MIN_ARMS} to ${MAX_ARMS} entries, the first being the one the others are compared against`);
   }
   if (raw.length < MIN_ARMS) throw new UserError(`arms must hold at least ${MIN_ARMS} entry`);
-  if (raw.length > MAX_ARMS) throw new UserError(`arms may hold at most ${MAX_ARMS} entries; beyond that one judge cannot compare them fairly`);
+  if (raw.length > MAX_ARMS) throw new UserError(`arms may hold at most ${MAX_ARMS} entries`);
 
   const parsed = raw.map((entry, index) => parseArm(requireObject(entry, `arms[${index}]`), `arms[${index}]`, baseDir));
   for (const arm of parsed) {
@@ -197,8 +228,8 @@ function parseArm(value: ObjectValue, label: string, baseDir: string): Unlabelle
   const unknown = Object.keys(value).filter((key) => !ARM_KEYS.has(key));
   if (unknown.length > 0) throw new UserError(`${label} may only set ${[...ARM_KEYS].join(", ")}, not ${unknown.join(", ")}`);
   if (value.reuse !== undefined) {
-    if (value.candidate !== undefined || value.producer !== undefined || value.environment !== undefined) {
-      throw new UserError(`${label}.reuse cannot be combined with candidate, producer, or environment`);
+    if (["candidate", "producer", "environment", "task", "inputs"].some((key) => value[key] !== undefined)) {
+      throw new UserError(`${label}.reuse cannot be combined with candidate, producer, environment, task, or inputs`);
     }
     const reuse = requireObject(value.reuse, `${label}.reuse`);
     if (Object.keys(reuse).some((key) => key !== "run" && key !== "arm")) throw new UserError(`${label}.reuse may only set run and arm`);
@@ -214,6 +245,8 @@ function parseArm(value: ObjectValue, label: string, baseDir: string): Unlabelle
     ? undefined
     : parseArmOverride(requireObject(value.producer, `${label}.producer`), `${label}.producer`, baseDir);
   const environment = parseEnvironmentName(value.environment, `${label}.environment`);
+  const task = optionalString(value.task, `${label}.task`);
+  const inputs = parseInputs(value.inputs, `${label}.inputs`, baseDir);
   return {
     ...(value.label !== undefined ? { label: requireString(value.label, `${label}.label`) } : {}),
     ...(value.candidate === undefined ? {} : {
@@ -225,7 +258,20 @@ function parseArm(value: ObjectValue, label: string, baseDir: string): Unlabelle
     }),
     ...(override && Object.keys(override).length > 0 ? { producer: override } : {}),
     ...(environment ? { environment } : {}),
+    ...(task ? { task } : {}),
+    ...(value.inputs !== undefined ? { inputs } : {}),
   };
+}
+
+export function parseInputs(value: unknown, label: string, baseDir: string): Record<string, string> {
+  const entries = Object.entries(optionalObject(value, label));
+  const names = new Set<string>();
+  return Object.fromEntries(entries.map(([name, source]) => {
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(name)) throw new UserError(`${label} names must be simple file or directory names, without slashes: ${name}`);
+    if (names.has(name.toLowerCase())) throw new UserError(`${label} has colliding names: ${name}`);
+    names.add(name.toLowerCase());
+    return [name, resolvePath(requireString(source, `${label}.${name}`), baseDir)];
+  }));
 }
 
 /**
@@ -349,7 +395,7 @@ function parseArmOverride(value: ObjectValue, label: string, baseDir: string, al
   const model = optionalString(value.model, `${label}.model`);
   const effort = optionalString(value.effort, `${label}.effort`);
   const settings = optionalString(value.settings, `${label}.settings`);
-  const env = parseEnvironment(value.env, `${label}.env`);
+  const env = parseEnvironment(value.env, `${label}.env`, true);
   const mcpServers = parseMcpServers(value.mcpServers, `${label}.mcpServers`);
   const setup = optionalString(value.setup, `${label}.setup`);
   return {
@@ -389,12 +435,16 @@ function parseMcpServers(value: unknown, label: string): Record<string, McpServe
  * as written. The scrubbed home owns HOME, TMPDIR, and the XDG paths; only PATH
  * may be extended, or the isolation could be undone one variable at a time.
  */
-function parseEnvironment(value: unknown, label: string): Record<string, string> {
+function parseEnvironment(value: unknown, label: string, protectCredentials = false): Record<string, string> {
   const entries = Object.entries(optionalObject(value, label));
   const names = entries.map(([name]) => name);
   const owned = names.filter((name) => ISOLATION_VARIABLES.includes(name) && name !== EXTENDABLE_VARIABLE);
   if (owned.length > 0) {
     throw new UserError(`${label} may not set ${owned.join(", ")}: the scrubbed environment owns ${ISOLATION_VARIABLES.join(", ")}, and only ${EXTENDABLE_VARIABLE} may be extended`);
+  }
+  if (protectCredentials) {
+    const overrides = names.filter((name) => BROKER_ENVIRONMENT_VARIABLES.has(name));
+    if (overrides.length) throw new UserError(`${label} may not set ${overrides.join(", ")}: provider authentication and routing are owned by the credential broker`);
   }
   return Object.fromEntries(entries
     .sort(([left], [right]) => left.localeCompare(right))

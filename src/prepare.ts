@@ -1,8 +1,8 @@
 import { randomBytes } from "node:crypto";
-import { mkdir, readFile, rm, rmdir } from "node:fs/promises";
+import { copyFile, lstat, mkdir, readFile, readdir, rm, rmdir } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { stringify as stringifyYaml } from "yaml";
-import { environmentFor, producerFor, sharedFoldersFor } from "./config.js";
+import { assertGuestCompatible, environmentFor, parseInputs, producerFor, runtimeFor, sharedFoldersFor } from "./config.js";
 import { buildForbiddenIdentities, collectForbiddenHashes, hiddenFrom, scanFiles } from "./leaks.js";
 import { UserError } from "./errors.js";
 import {
@@ -10,6 +10,7 @@ import {
   assertFile,
   buildManifest,
   copySelectedSource,
+  isTreeNoise,
   listSkillDirectories,
   removeTree,
   samePath,
@@ -19,7 +20,6 @@ import {
 } from "./files.js";
 import { readJson, writeJson } from "./json.js";
 import { pathsConfig } from "./paths.js";
-import { hiddenFolders, nodeModulesWarning } from "./sandbox.js";
 import { producerOf } from "./run.js";
 import { freezeReusedOutputs } from "./reuse.js";
 import {
@@ -57,10 +57,12 @@ export const MATERIAL_FILE = join("audit", "forbidden-material.json");
  * restarting a failed arm is the same operation as starting it.
  */
 export async function prepareRun(unresolved: ExperimentConfig, paths: PathsConfig = pathsConfig()): Promise<ResolvedRun> {
+  assertGuestCompatible(unresolved.sandbox, unresolved.nodeModules);
   // Categories are resolved to names once, here, so every later check and the
   // run's own record speak of the skills that were actually withheld.
   const config: ExperimentConfig = {
     ...unresolved,
+    runtime: runtimeFor(unresolved),
     skills: { ...unresolved.skills, exclude: await resolveSkillExclusions(unresolved) },
   };
   await validateInputs(config);
@@ -86,8 +88,6 @@ export async function prepareRun(unresolved: ExperimentConfig, paths: PathsConfi
     await freezeInputs(runDir, config, assignment);
     await freezeReusedOutputs(runDir, config, assignment, paths);
     await createRunState(runDir, runId, producerIds);
-    const warning = config.sandbox ? nodeModulesWarning(config.nodeModules, hiddenFolders(config, paths)) : null;
-    if (warning) process.stderr.write(`Warning: ${warning}.\n`);
     return { runId, runDir, tempDir, config, assignment };
   } catch (error) {
     await removeTree(runDir);
@@ -320,7 +320,20 @@ async function forbiddenMaterial(runDir: string, config: ExperimentConfig): Prom
 }
 
 async function freezeInputs(runDir: string, config: ExperimentConfig, assignment: Assignment): Promise<void> {
+  for (const [producerId, arm] of armsByProducer(config, assignment)) {
+    const inputs = parseInputs(arm.inputs, `${arm.label}.inputs`, "/");
+    for (const [name, source] of Object.entries(inputs)) {
+      await freezeArmInput(source, join(runDir, "frozen", producerId, "context", "inputs", name), name);
+    }
+  }
   const material = await forbiddenMaterial(runDir, config);
+  for (const [producerId, arm] of armsByProducer(config, assignment)) {
+    if (!Object.keys(arm.inputs ?? {}).length) continue;
+    const inputs = await buildManifest(join(runDir, "frozen", producerId, "context", "inputs"));
+    for (const entry of inputs.entries) material.hashes.push({ value: entry.sha256, arm: arm.label });
+    for (const source of Object.values(arm.inputs!)) material.identities.push({ label: "arm input path", value: source, kind: "path", arm: arm.label });
+    await writeJson(join(runDir, "manifests", `${producerId}-inputs.json`), inputs);
+  }
   await writeJson(join(runDir, MATERIAL_FILE), material);
   const everything = hiddenFrom(material, null);
   for (const arm of candidateArms(config)) {
@@ -338,6 +351,8 @@ async function freezeInputs(runDir: string, config: ExperimentConfig, assignment
   for (const [producerId, arm] of armsByProducer(config, assignment)) {
     const contextDir = contextDirFor(producerId);
     await mkdir(contextDir, { recursive: true, mode: 0o755 });
+    const settings = producerFor(config.producer, arm).settings;
+    if (!arm.reuse && settings) await writePrivateFile(join(contextDir, "claude-settings.json"), await readFile(settings, "utf8"));
     const catalog = arm.reuse ? [] : await snapshotSkills(config, contextDir, arm);
     catalogs.set(producerId, catalog);
     await writeJson(join(contextDir, "skill-catalog.json"), catalog);
@@ -367,6 +382,23 @@ async function freezeInputs(runDir: string, config: ExperimentConfig, assignment
 
   await assertMatchingBaselineSkills(config, assignment, runDir, catalogs);
   await assertMatchingBaselineSubagents(config, assignment, runDir);
+}
+
+/** Inputs are copied as plain files; following a link would defeat deliberate withholding. */
+async function freezeArmInput(source: string, destination: string, relative: string): Promise<void> {
+  const details = await lstat(source).catch(() => null);
+  if (!details) throw new UserError(`Arm input does not exist: ${source}`);
+  if (details.isSymbolicLink()) throw new UserError(`Symlinks are not allowed in arm inputs: ${source}`);
+  if (isTreeNoise(relative)) throw new UserError(`Arm inputs cannot contain dependency, agent configuration, or metadata paths: ${relative}`);
+  if (details.isDirectory()) {
+    await mkdir(destination, { recursive: true });
+    for (const entry of await readdir(source)) await freezeArmInput(join(source, entry), join(destination, entry), `${relative}/${entry}`);
+  } else if (details.isFile()) {
+    await mkdir(dirname(destination), { recursive: true });
+    await copyFile(source, destination);
+  } else {
+    throw new UserError(`Special files are not allowed in arm inputs: ${source}`);
+  }
 }
 
 /** The producers in run order, each with the arm it is running. */

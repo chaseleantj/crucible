@@ -89,6 +89,8 @@ export function agentStatus(agent: LiveAgent): { text: string; tone: Tone } {
       return { text: "Stopped", tone: "done" };
     case "running":
       switch (agent.health) {
+        case "preparing":
+          return { text: "Waiting or preparing", tone: "done" };
         case "stalled":
           return { text: "Stalled", tone: "danger" };
         case "quiet":

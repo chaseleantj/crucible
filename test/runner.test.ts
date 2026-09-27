@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, stat, symlink, writeFile } from "node:fs/promises";
-import { homedir, platform, tmpdir } from "node:os";
+import { lstat, mkdir, mkdtemp, readFile, readdir, stat, symlink, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import test from "node:test";
 import { AUTH_ENVIRONMENT, adapterFor, armEnvironment, authProblem, scrubbedEnvironment, setClaudeTokenReader, writeSubagentPlugin } from "../src/adapters.js";
@@ -10,13 +10,11 @@ import { entryIssues } from "../src/check.js";
 import { armChanges, recordBaseline, withholdNonArmFiles } from "../src/baseline.js";
 import { armCost, describeCost } from "../src/cost.js";
 import { loadConfig, parseDuration, producerFor } from "../src/config.js";
-import { copyTree, gitignoreFilter, listSkillDirectories, makeReadOnly, removeTree, sha256File } from "../src/files.js";
+import { copyTree, gitignoreFilter, listSkillDirectories, removeLinks, removeTree, sha256File } from "../src/files.js";
 import { readJson, writeJson } from "../src/json.js";
 import { collectForbiddenHashes, hiddenFrom, matchesIdentity, omitSkillPathEchoes, scanFiles } from "../src/leaks.js";
 import { prepareRun } from "../src/prepare.js";
 import { recordReusableInputs } from "../src/reuse.js";
-import { RUNNER_PACKAGES, linkJudgePackages } from "../src/playwright.js";
-import { hiddenFolders, nodeModulesWarning, profile, runSandboxProbes, sandboxWrap } from "../src/sandbox.js";
 import { copyJudgeInputs, judgePrompt } from "../src/judge.js";
 import { renderMarkdown } from "../src/html.js";
 import { cleanRun, reportRun } from "../src/report.js";
@@ -26,7 +24,7 @@ import { publishShots, readShotIndex } from "../src/shots.js";
 import { readRunState, resetJudge, setRunState, trackAgent, updateJudge, updateProducer } from "../src/state.js";
 import { statusJson } from "../src/status.js";
 import { judgeLetters, parseVerdict, revealVerdict } from "../src/verdict.js";
-import { runSetup } from "../src/agent.js";
+import { runSetup, type SetupOptions } from "../src/agent.js";
 import { completionOutcome, startRun, stopRun } from "../src/runner.js";
 import type { AgentIdentity, ExperimentConfig, ForbiddenIdentity, ForbiddenMaterial, JudgedResult, PathsConfig, ResolvedRun, RunResult, Verdict } from "../src/types.js";
 import { skillLoader, snapshotSkills, type SkillCatalogEntry } from "../src/skills.js";
@@ -87,7 +85,7 @@ test("experiment files reject unknown fields, and name what the arms list replac
   await removeTree(dir);
 });
 
-test("sandbox defaults to on and can be disabled", async () => {
+test("legacy sandbox false is rejected without a host fallback", async () => {
   const dir = await mkdtemp(join(tmpdir(), "crucible-test-"));
   const base = [
     "name: t",
@@ -102,19 +100,22 @@ test("sandbox defaults to on and can be disabled", async () => {
   await writeFile(join(dir, "on.yaml"), base.join("\n"));
   await writeFile(join(dir, "off.yaml"), [...base, "sandbox: false"].join("\n"));
   assert.equal((await loadConfig(join(dir, "on.yaml"))).sandbox, true);
-  assert.equal((await loadConfig(join(dir, "off.yaml"))).sandbox, false);
+  await assert.rejects(loadConfig(join(dir, "off.yaml")), /no host execution fallback/);
   await removeTree(dir);
 });
 
-test("scrubbed environment hides the home and passes only the agent's credentials", () => {
+test("scrubbed environment hides the home and carries no credential at all", () => {
   process.env.CRUCIBLE_TEST_SECRET = "x";
   process.env.ANTHROPIC_API_KEY = "key";
-  const env = scrubbedEnvironment("/tmp/rt", "claude");
-  assert.equal(env.HOME, "/tmp/rt/home");
-  assert.equal(env.ANTHROPIC_API_KEY, "key");
-  assert.equal(env.CRUCIBLE_TEST_SECRET, undefined);
-  const codexEnv = scrubbedEnvironment("/tmp/rt", "codex");
-  assert.equal(codexEnv.ANTHROPIC_API_KEY, undefined);
+  try {
+    const env = scrubbedEnvironment("/tmp/rt");
+    assert.equal(env.HOME, "/tmp/rt/home");
+    assert.equal(env.ANTHROPIC_API_KEY, undefined, "setup commands and every other arm process get no credential");
+    assert.equal(env.CRUCIBLE_TEST_SECRET, undefined);
+  } finally {
+    delete process.env.CRUCIBLE_TEST_SECRET;
+    delete process.env.ANTHROPIC_API_KEY;
+  }
 });
 
 test("auth check accepts a claude credential from the environment or the keychain", async () => {
@@ -147,52 +148,31 @@ test("auth check accepts a claude credential from the environment or the keychai
   }
 });
 
-test("codex adapter bypasses its own sandbox and ignores user config", async () => {
+test("codex enables automatic review inside the guest and does not load user config", async () => {
   const runtimeDir = await mkdtemp(join(tmpdir(), "crucible-test-"));
-  const adapter = adapterFor("codex");
+  const savedKey = process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY = "crucible-test-key";
   let command;
   try {
-    command = await adapter.prepare({
+    command = await adapterFor("codex").prepare({
       producerDir: runtimeDir,
       cwd: join(runtimeDir, "source"),
       runtimeDir,
       prompt: "p",
       config: { agent: "codex", timeoutMs: 1000 },
     });
-  } catch {
-    // No codex CLI on this machine; the flag set is asserted where it exists.
-    return;
+    assert.ok(command.args.includes("--approve-for-me"));
+    assert.ok(!command.args.includes("--dangerously-bypass-approvals-and-sandbox"));
+    assert.ok(!command.args.includes('approval_policy="never"'));
+    assert.ok(command.args.includes("--ignore-user-config"));
+    assert.equal(command.env.CODEX_HOME, join(runtimeDir, "codex-home"));
+    assert.notEqual(command.env.OPENAI_API_KEY, process.env.OPENAI_API_KEY);
+  } finally {
+    await command?.release?.();
+    if (savedKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = savedKey;
+    await removeTree(runtimeDir);
   }
-  assert.ok(command.args.includes("--dangerously-bypass-approvals-and-sandbox"));
-  assert.ok(command.args.includes("--ignore-user-config"));
-  assert.equal(command.env.CODEX_HOME, join(runtimeDir, "codex-home"));
-  await removeTree(runtimeDir);
-});
-
-test("the profile contains writes and hides the experiment in rule order", () => {
-  const text = profile({
-    workspaceDir: "/private/tmp/w/p-1",
-    deniedRoots: ["/Users/u/.crucible/runs", "/Users/u/.claude/skills"],
-    readableRoots: ["/Users/u/.claude/skills/node_modules"],
-    frozenDirs: ["/private/tmp/w/p-1/.context"],
-    extraWriteRoots: ["/tmp/crucible-p-1"],
-    sharedTempDir: "/private/tmp",
-    runTempDir: "/private/tmp/w",
-  });
-  const lines = text.split("\n");
-  assert.equal(lines[1], "(allow default)");
-  const denyWrites = lines.findIndex((line) => line.includes("deny file-write*") && line.includes("require-not"));
-  const denySkills = lines.findIndex((line) => line.includes(".claude/skills"));
-  const allowWorkspace = lines.findIndex((line) => line.includes('(allow file-read* file-write* (subpath "/private/tmp/w/p-1"))'));
-  const denyFrozen = lines.findIndex((line) => line.includes(".context"));
-  assert.ok(denyWrites < denySkills, "write containment comes before experiment denials");
-  const allowPackages = lines.findIndex((line) => line === '(allow file-read* (subpath "/Users/u/.claude/skills/node_modules"))');
-  assert.ok(denySkills < allowPackages, "node_modules is read back out of the denials");
-  assert.ok(denySkills < allowWorkspace, "the workspace allowance must out-rank the temp-root denial");
-  assert.ok(allowWorkspace < denyFrozen, "the frozen-context denial must out-rank the workspace allowance");
-  // The shared temp directory is writable, as on any machine; the run's own temp is denied again below it.
-  const allowTemp = lines.findIndex((line) => line === '(allow file-write* (subpath "/private/tmp"))');
-  assert.ok(denyWrites < allowTemp && allowTemp < denySkills, "the shared temp allowance sits with the other write allowances");
 });
 
 const SHARED_NAMES = ["crafts", "styles"];
@@ -314,77 +294,21 @@ test("clean removes the workspace of a run whose frozen experiment no longer loa
   await removeTree(root);
 });
 
-test("the deny-list sandbox hides the experiment and contains writes", { skip: platform() !== "darwin" }, async () => {
-  const { run, root } = await prepareFixture();
-  for (const producerId of Object.keys(run.assignment.arms)) {
-    const producerDir = join(run.tempDir, producerId);
-    await mkdir(join(producerDir, ".runtime", "tmp"), { recursive: true, mode: 0o700 });
-    await copyTree(join(run.runDir, "frozen", "source"), join(producerDir, "source"));
-    await copyTree(join(run.runDir, "frozen", producerId, "context"), join(producerDir, ".context"));
-    await makeReadOnly(join(producerDir, ".context"));
-    const checks = await runSandboxProbes(run, producerId);
-    for (const check of checks) assert.ok(check.passed, `${check.name}: ${check.detail ?? ""}`);
-  }
-  await removeTree(root);
-});
-
-test("the sandbox also hides live shared guidance, subagents, and the archive, but never node_modules", { skip: platform() !== "darwin" }, async () => {
-  const { run, paths, root } = await prepareFixture();
-  const shared = join(root, "guidance", "crafts");
-  const agents = join(root, "agents");
-  const packages = join(run.config.skills.root, "node_modules");
-  for (const folder of [shared, agents, packages, paths.archiveRoot]) {
-    await mkdir(folder, { recursive: true });
-    await writeFile(join(folder, "file"), "x\n");
-  }
-  const config = { ...run.config, skills: { ...run.config.skills, shared: [shared] }, subagents: { ...run.config.subagents, root: agents }, nodeModules: packages };
-  const previous = process.env.CRUCIBLE_ARCHIVE_ROOT;
-  process.env.CRUCIBLE_ARCHIVE_ROOT = paths.archiveRoot;
-  try {
-    const [producerId] = Object.keys(run.assignment.arms);
-    const producerDir = join(run.tempDir, producerId!);
-    await mkdir(join(producerDir, ".runtime", "tmp"), { recursive: true, mode: 0o700 });
-    await copyTree(join(run.runDir, "frozen", "source"), join(producerDir, "source"));
-    await copyTree(join(run.runDir, "frozen", producerId!, "context"), join(producerDir, ".context"));
-    const checks = await runSandboxProbes({ ...run, config }, producerId!);
-    for (const check of checks) assert.ok(check.passed, `${check.name}: ${check.detail ?? ""}`);
-    const names = checks.map((check) => check.name.replace(`${producerId}: `, ""));
-    for (const name of ["deny live shared crafts (deny)", "deny live subagents (deny)", "deny archive (deny)", "read node_modules (allow)"]) assert.ok(names.includes(name), name);
-  } finally {
-    if (previous === undefined) delete process.env.CRUCIBLE_ARCHIVE_ROOT;
-    else process.env.CRUCIBLE_ARCHIVE_ROOT = previous;
-  }
-  assert.match(nodeModulesWarning(packages, hiddenFolders(config, paths)) ?? "", /inside .*no-skills, which the sandbox hides/);
-  assert.equal(nodeModulesWarning(join(root, "elsewhere", "node_modules"), hiddenFolders(config, paths)), null);
-  await removeTree(root);
-});
-
-test("the judge loads Crucible's own Playwright under the sandbox, beside the configured packages", { skip: platform() !== "darwin" }, async () => {
-  assert.ok(RUNNER_PACKAGES, "Crucible's own Playwright is installed");
-  const { run, root } = await prepareFixture();
-  const load = 'require("playwright"); process.stdout.write(require("fs").realpathSync(require.resolve("playwright")))';
-  const judgeLoads = async (config: ExperimentConfig, judgeId: string, script: string) => {
-    const judgeDir = join(run.tempDir, judgeId);
-    await mkdir(judgeDir, { recursive: true });
-    assert.equal(await linkJudgePackages(config.nodeModules, judgeDir), true);
-    const launch = await sandboxWrap({ ...run, config }, judgeId, process.execPath, ["-e", script], [], []);
-    const result = spawnSync(launch.command, launch.args, { cwd: judgeDir, encoding: "utf8" });
-    assert.equal(result.status, 0, result.stderr);
-    return result.stdout;
-  };
-
-  // With no config file, nodeModules is null: Playwright still comes from Crucible's install.
-  assert.equal(run.config.nodeModules, null);
-  assert.ok((await judgeLoads(run.config, "j-plain", load)).startsWith(await realpath(RUNNER_PACKAGES)));
-
-  // A configured nodeModules, here inside the hidden skills root, adds its packages; its own Playwright gives way.
-  const packages = join(run.config.skills.root, "node_modules");
-  for (const name of ["left-pad", "playwright"]) {
-    await mkdir(join(packages, name), { recursive: true });
-    await writeFile(join(packages, name, "index.js"), `module.exports = "${name}";\n`);
-  }
-  const configured = await judgeLoads({ ...run.config, nodeModules: packages }, "j-configured", `require("left-pad"); ${load}`);
-  assert.ok(configured.startsWith(await realpath(RUNNER_PACKAGES)), configured);
+test("links and special files an agent leaves in its output are removed, never followed", async () => {
+  const root = await mkdtemp(join(tmpdir(), "crucible-links-"));
+  const secret = join(root, "secret");
+  await writeFile(secret, "keep out\n");
+  const output = join(root, "source");
+  await mkdir(join(output, "deep"), { recursive: true });
+  await mkdir(join(output, "node_modules", "x"), { recursive: true });
+  await writeFile(join(output, "index.html"), "<p>work</p>");
+  await symlink(secret, join(output, "deep", "stolen.txt"));
+  await symlink(secret, join(output, "node_modules", "x", "link"));
+  spawnSync("/usr/bin/mkfifo", [join(output, "pipe")]);
+  assert.deepEqual((await removeLinks(output)).sort(), ["deep/stolen.txt", "pipe"]);
+  assert.equal(await readFile(join(output, "index.html"), "utf8"), "<p>work</p>");
+  assert.equal(await readFile(secret, "utf8"), "keep out\n", "the link's target is untouched");
+  assert.ok((await lstat(join(output, "node_modules", "x", "link"))).isSymbolicLink(), "installed packages are not the arm's output");
   await removeTree(root);
 });
 
@@ -487,6 +411,9 @@ test("claude argv names nothing about the arm: subagents ride in a plugin dir, m
   });
   const tools = command.args[command.args.indexOf("--tools") + 1];
   assert.equal(tools, "Bash,Read,Write,Edit,Glob,Grep,Task");
+  assert.equal(command.args[command.args.indexOf("--permission-mode") + 1], "auto");
+  assert.equal(command.args[command.args.indexOf("--permission-prompts") + 1], "none");
+  assert.ok(!command.args.includes("--dangerously-skip-permissions"));
   // A sibling arm's `ps` sees argv; none of the frozen material or arm variables may be on it.
   const argv = command.args.join(" ");
   for (const secret of ["--agents", "Be harsh", "critic", "--model", "claude-opus-4-1", "--effort", "xhigh"]) {
@@ -498,6 +425,12 @@ test("claude argv names nothing about the arm: subagents ride in a plugin dir, m
   assert.equal(await readFile(join(plugin, "agents", "critic.md"), "utf8"), definition);
   const settings = JSON.parse(await readFile(command.args[command.args.indexOf("--settings") + 1]!, "utf8"));
   assert.deepEqual(settings, { model: "claude-opus-4-1", effortLevel: "xhigh" });
+  // The agent holds a stand-in and the broker's address, never the credential itself.
+  assert.notEqual(command.env.CLAUDE_CODE_OAUTH_TOKEN, "token");
+  assert.match(command.env.CLAUDE_CODE_OAUTH_TOKEN ?? "", /^crucible-[0-9a-f]{48}$/);
+  assert.match(command.env.ANTHROPIC_BASE_URL ?? "", /^http:\/\/127\.0\.0\.1:\d+$/);
+  assert.equal(command.env.CLAUDE_CODE_TMPDIR, command.env.TMPDIR);
+  await command.release?.();
   // The producer is told the name the Task tool registers the plugin agent under.
   assert.match(subagentLoader([{ name: "critic", description: "reviews", path: "subagents/critic.md", candidate: false }], "claude", contextDir), /- frozen:critic: reviews/);
   await removeTree(producerDir);
@@ -763,8 +696,11 @@ test("arms can differ in producer model instead of a candidate skill", async () 
   ].join("\n"));
   await write("[]");
   await assert.rejects(loadConfig(join(root, "experiment.yaml")), /at least 1 entry/);
-  await write(`[${Array.from({ length: 7 }, (_, index) => `{label: a${index}}`).join(", ")}]`);
-  await assert.rejects(loadConfig(join(root, "experiment.yaml")), /at most 6 entries/);
+  await write(`[${Array.from({ length: 11 }, (_, index) => `{label: a${index}}`).join(", ")}]`);
+  await assert.rejects(loadConfig(join(root, "experiment.yaml")), /at most 10 entries/);
+  await write(`[${Array.from({ length: 10 }, (_, index) => `{label: a${index}}`).join(", ")}]`);
+  const tenArmRun = await prepareRun(await loadConfig(join(root, "experiment.yaml")), paths);
+  assert.deepEqual(Object.values(tenArmRun.assignment.arms).sort(), Array.from({ length: 10 }, (_, index) => `a${index}`));
   // A replicate of the same settings is allowed, but its label cannot be guessed.
   await write("[{producer: {model: a}}, {producer: {model: a}}]");
   await assert.rejects(loadConfig(join(root, "experiment.yaml")), /deliberate replicate: give each one its own label/);
@@ -835,7 +771,7 @@ test("an arm can hook in a tool with settings, env, and a setup command", async 
 });
 
 test("extra environment variables expand against the scrubbed environment and nothing else", () => {
-  const env = armEnvironment(scrubbedEnvironment("/tmp/rt", "claude"), {
+  const env = armEnvironment(scrubbedEnvironment("/tmp/rt"), {
     PATH: "/opt/homebrew/bin:$PATH",
     ANTHROPIC_BASE_URL: "http://127.0.0.1:8080",
     CACHE: "${HOME}/cache",
@@ -845,7 +781,7 @@ test("extra environment variables expand against the scrubbed environment and no
   assert.equal(env.ANTHROPIC_BASE_URL, "http://127.0.0.1:8080");
   assert.equal(env.CACHE, "/tmp/rt/home/cache");
   assert.equal(env.MISSING, "/x");
-  assert.equal(armEnvironment(scrubbedEnvironment("/tmp/rt", "claude"), undefined).PATH, process.env.PATH);
+  assert.equal(armEnvironment(scrubbedEnvironment("/tmp/rt"), undefined).PATH, "/usr/local/bin:/usr/bin:/bin");
 });
 
 test("arm labels default to what each arm varied and can be overridden", async () => {
@@ -911,11 +847,11 @@ test("the judge is told Playwright is available only when its workspace resolves
   assert.doesNotMatch(prompt({ playwright: false, chromium: false }), /Playwright is available/);
 });
 
-test("the judge is asked to name the control arm, not an untouched source", () => {
+test("the judge guesses a reference without assuming which experimental factors varied", () => {
   const letters = judgeLetters(5);
   const prompt = judgePrompt({ config: { task: "Improve the page", arms: [{ label: "baseline" }, { label: "variant" }] } } as ResolvedRun, "/tmp/judge", letters);
-  assert.match(prompt, /One of the outputs is the control: it was produced without any candidate skill, tool, or setting override/);
-  assert.match(prompt, /The control is one of A, B, C, D, E, so "none of them" is not an answer/);
+  assert.match(prompt, /One of the outputs is the reference configuration/);
+  assert.match(prompt, /Configurations may vary prompts, information, models, skills, or tools/);
   assert.match(prompt, /your guess at the control arm/);
   assert.doesNotMatch(prompt, /baseline/i);
   // A judge with nothing to go on may still answer null, and that is not counted as a hit.
@@ -1301,9 +1237,9 @@ test("three arms: defaults, one candidate per arm, three letters, and the sealed
 
   const result = await readJson<JudgedResult>(join(run.runDir, "result.json"));
   assert.deepEqual(result.arms, [
-    { label: "without-tone-skill", environment: "clean", candidate: null, replaces: null },
-    { label: "with-tone-skill", environment: "clean", candidate, replaces: null },
-    { label: "low", environment: "clean", candidate: null, replaces: null },
+    { label: "without-tone-skill", task: "do it", inputs: [], environment: "clean", candidate: null, replaces: null },
+    { label: "with-tone-skill", task: "do it", inputs: [], environment: "clean", candidate, replaces: null },
+    { label: "low", task: "do it", inputs: [], environment: "clean", candidate: null, replaces: null },
   ]);
   assert.equal(result.environment, "clean");
   assert.equal(result.series, "tone");
@@ -1334,16 +1270,28 @@ test("three arms: defaults, one candidate per arm, three letters, and the sealed
   await removeTree(root);
 });
 
+/** Execute setup locally only in this test double; production always delegates to Harbor. */
+function localSetupSession(directory: string): SetupOptions["session"] {
+  return {
+    execute: async (request: Parameters<SetupOptions["session"]["execute"]>[0]) => {
+      assert.equal(request.cwd, "/workspace/source");
+      const result = spawnSync(request.command, request.args, {
+        cwd: join(directory, "source"), env: request.env, encoding: "utf8", timeout: request.timeoutMs,
+      });
+      return { code: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "", timedOut: result.error?.message.includes("ETIMEDOUT") ?? false };
+    },
+  } as SetupOptions["session"];
+}
+
 test("setup runs in the project, the shared command first, and a non-zero exit fails the arm", async () => {
   const { run, root } = await prepareFixture();
   const producerId = Object.keys(run.assignment.arms)[0]!;
   const producerDir = join(run.tempDir, producerId);
   await copyTree(join(run.runDir, "frozen", "source"), join(producerDir, "source"));
-  // Without the Seatbelt wrapper, which the producer's own launch covers.
-  const unsandboxed = { ...run, config: { ...run.config, sandbox: false } };
   const logDir = join(run.runDir, "producers", producerId);
   const setup = (commands: string[]) => runSetup({
-    run: unsandboxed,
+    run,
+    session: localSetupSession(producerDir),
     id: producerId,
     directory: producerDir,
     cwd: join(producerDir, "source"),
@@ -1393,13 +1341,13 @@ test("the judge's progress is tracked in state.json like a producer's, and a rer
 test("an arm's changes are measured from after its setup, and the judge sees the project as it was frozen", async () => {
   const { run, root } = await prepareFixture();
   const [first, second] = Object.keys(run.assignment.arms) as [string, string];
-  const unsandboxed = { ...run, config: { ...run.config, sandbox: false } };
   for (const producerId of [first, second]) {
     const producerDir = join(run.tempDir, producerId);
     await copyTree(join(run.runDir, "frozen", "source"), join(producerDir, "source"));
     // The tool's own installation: a file of its own, and its section in CLAUDE.md.
     assert.equal(await runSetup({
-      run: unsandboxed,
+      run,
+    session: localSetupSession(producerDir),
       id: producerId,
       directory: producerDir,
       cwd: join(producerDir, "source"),
@@ -1922,6 +1870,20 @@ test("clean mode snapshots nothing shared unless the experiment asks, and a craf
   await removeTree(root);
 });
 
+test("skill and subagent prompts do not label the available material as a treatment", () => {
+  const skill = { name: "draw", description: "Draw SVGs", path: "skills/draw/SKILL.md", candidate: true };
+  const reviewer = { name: "reviewer", description: "Review the work", path: "subagents/reviewer.md", candidate: true };
+  const prompt = skillLoader([skill], "/workspace/.context", []);
+  assert.match(prompt, /Support files, when present/);
+  assert.doesNotMatch(prompt, /candidate|treatment|control|baseline/i);
+  assert.equal(prompt, skillLoader([{ ...skill, candidate: false }], "/workspace/.context", []));
+  for (const agent of ["claude", "codex", "cursor"] as const) {
+    const loader = subagentLoader([reviewer], agent, "/workspace/.context");
+    assert.doesNotMatch(loader, /candidate|treatment|control|baseline/i);
+    assert.equal(loader, subagentLoader([{ ...reviewer, candidate: false }], agent, "/workspace/.context"));
+  }
+});
+
 test("arms may mix environments: each gets its own baseline, and a clean arm may name what realistic arms already have", async () => {
   const root = await mkdtemp(join(tmpdir(), "crucible-test-"));
   try {
@@ -1974,7 +1936,7 @@ test("arms may mix environments: each gets its own baseline, and a clean arm may
     // A realistic arm naming its own baseline is still refused.
     await assert.rejects(prepare(`[{environment: clean}, {candidate: {path: ./tone-skill, dependencies: ['${helper}']}}]`), /ordinary skill helper/);
     // A frozen historical arm keeps the environment it ran in.
-    await assert.rejects(prepare("[{}, {environment: clean, reuse: {run: ab-00000000, arm: x}}]"), /reuse cannot be combined with candidate, producer, or environment/);
+    await assert.rejects(prepare("[{}, {environment: clean, reuse: {run: ab-00000000, arm: x}}]"), /reuse cannot be combined with candidate, producer, environment, task, or inputs/);
     await assert.rejects(prepare("[{}, {environment: sterile}]"), /arms\[1\]\.environment must be realistic or clean/);
   } finally { await removeTree(root); }
 });

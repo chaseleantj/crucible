@@ -203,6 +203,26 @@ export async function listFiles(root: string): Promise<string[]> {
   return files.sort();
 }
 
+/**
+ * Removes every symlink and special file under an arm's output, without
+ * following any, and returns their paths. An agent can leave a link to a file
+ * of the user's; nothing downstream follows links, but one would otherwise stop
+ * the audit, the judge's copy, and the archive.
+ */
+export async function removeLinks(root: string, prefix = ""): Promise<string[]> {
+  const removed: string[] = [];
+  for (const entry of await readdir(join(root, prefix), { withFileTypes: true }).catch(() => [])) {
+    const path = prefix ? `${prefix}/${entry.name}` : entry.name;
+    if (TREE_NOISE.has(entry.name)) continue;
+    if (entry.isDirectory()) removed.push(...await removeLinks(root, path));
+    else if (!entry.isFile()) {
+      await rm(join(root, path), { force: true });
+      removed.push(path);
+    }
+  }
+  return removed;
+}
+
 export async function buildManifest(root: string): Promise<FileManifest> {
   const entries: FileManifestEntry[] = [];
   for (const path of await listFiles(root)) {
@@ -351,7 +371,7 @@ export const isMacJunk = (name: string) => name === ".DS_Store" || name.startsWi
 /** Never part of a tree's own content: version control, dependencies, agent configuration, macOS metadata. */
 const TREE_NOISE = new Set([".git", "node_modules", ".claude", ".codex", ".cursor"]);
 
-function isTreeNoise(path: string): boolean {
+export function isTreeNoise(path: string): boolean {
   return path.split("/").some((segment) => TREE_NOISE.has(segment) || isMacJunk(segment));
 }
 

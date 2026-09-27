@@ -1,6 +1,6 @@
 # Contributing
 
-Crucible runs on macOS only for now. The producer sandbox uses macOS Seatbelt (`sandbox-exec`), and Claude credentials come from the macOS keychain. You need Node 24 or newer.
+Crucible runs agents in Linux guests through Harbor and Apple Container on Apple silicon Macs with macOS 26+. Provider credentials stay in the host broker. You need Node 24+; runtime setup also needs Python 3.12+.
 
 ## Set up and run the checks
 
@@ -15,7 +15,13 @@ The tests do not start agent sessions, read your keychain, or read your `~/.conf
 
 - the capture tests and the dashboard tests, which drive the built dashboard in a browser, skip when Playwright's Chromium is not installed (`npm run setup:browsers`; CI runs it);
 - the Codex MCP test skips when the `codex` CLI is not on your PATH;
-- the Seatbelt test skips on anything other than macOS.
+- tests that exercise a real Harbor guest require `npm run setup:runtime`; ordinary unit tests use fake transports and make no model calls.
+
+After runtime setup, run the Python worker and relay tests with the installed environment. The relay test needs local loopback sockets:
+
+```sh
+~/.local/share/crucible/harbor/venv/bin/python -B -m unittest discover -s runtime -p 'test_*.py'
+```
 
 ## Working on the dashboard
 

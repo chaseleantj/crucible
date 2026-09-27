@@ -1,17 +1,19 @@
 import { randomBytes } from "node:crypto";
 import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { assertGuestCompatible } from "./config.js";
 import { executeAgent, type AgentExecutionResult } from "./agent.js";
 import { UserError, errorMessage } from "./errors.js";
 import { buildManifest, copyTree, makeReadOnly, removeTree, writePrivateFile } from "./files.js";
 import { readJson, writeJson } from "./json.js";
 import { hiddenFrom, omitSkillPathEchoes, scanFiles } from "./leaks.js";
 import { copyArmOutputs } from "./outputs.js";
-import { chromiumProblem, linkJudgePackages } from "./playwright.js";
 import { MATERIAL_FILE } from "./prepare.js";
 import { recordReusableInputs } from "./reuse.js";
 import { publishReportAssets } from "./report-assets.js";
-import { serveOutputs, type ServedOutput } from "./serve.js";
+import type { ServedOutput } from "./serve.js";
+import { openAgentSession } from "./runner.js";
+import { prepareRuntimeDirectories } from "./adapters.js";
 import { publishShots, shotsPrompt } from "./shots.js";
 import { appendRunEvent, readRunState, resetJudge, setRunState, trackAgent, updateJudge } from "./state.js";
 import type { ForbiddenMaterial, JudgeConfig, JudgeOutput, ResolvedRun } from "./types.js";
@@ -21,6 +23,7 @@ import { judgeLetters, parseVerdict } from "./verdict.js";
 type JudgeMapping = Record<JudgeOutput, string>;
 
 export async function judgeRun(run: ResolvedRun): Promise<void> {
+  assertGuestCompatible(run.config.sandbox, run.config.nodeModules);
   const judgeConfig = run.config.judge;
   if (!judgeConfig) {
     throw new UserError(`Run ${run.runId} has no judge: its experiment set judge: none. Capture its outputs with crucible capture ${run.runId} and seal them with crucible report ${run.runId}.`);
@@ -41,8 +44,15 @@ export async function judgeRun(run: ResolvedRun): Promise<void> {
   const inputDir = join(judgeDir, "input");
   await removeTree(judgeDir);
   await mkdir(join(judgeDir, ".runtime", "tmp"), { recursive: true, mode: 0o700 });
-  const tools: JudgeTools = { playwright: await linkJudgePackages(run.config.nodeModules, judgeDir), chromium: (await chromiumProblem()) === null };
+  await prepareRuntimeDirectories(join(judgeDir, ".runtime"));
+  const tools: JudgeTools = { playwright: true, chromium: true };
   const withheld = await copyJudgeInputs(run, inputDir, mapping);
+  const effectiveJudge = { ...judgeConfig };
+  if (judgeConfig.settings) {
+    const settings = join(judgeDir, ".context", "claude-settings.json");
+    await writePrivateFile(settings, await readFile(judgeConfig.settings, "utf8"));
+    effectiveJudge.settings = settings;
+  }
   const rubric = await readFile(join(run.runDir, "rubric.md"), "utf8");
   await writePrivateFile(join(judgeDir, ".context", "rubric.md"), rubric);
 
@@ -71,12 +81,13 @@ export async function judgeRun(run: ResolvedRun): Promise<void> {
   await resetJudge(run.runDir);
   let result;
   try {
-    result = await serveAndJudge(run, judgeId, judgeDir, inputDir, letters, judgeConfig, tools);
+    result = await serveAndJudge(run, judgeId, judgeDir, letters, effectiveJudge, tools);
   } catch (error) {
     // Left ready, the judge's row would read as waiting to start forever.
     await updateJudge(run.runDir, { state: "failed", completedAt: new Date().toISOString(), error: errorMessage(error) });
     throw error;
   }
+  if ((await readRunState(run.runDir)).judge?.state === "stopped") return;
   const failure = result.succeeded ? null : result.timedOut ? "timed out" : `exited with ${result.exitCode ?? result.signal}`;
   await updateJudge(run.runDir, {
     state: failure ? "failed" : "complete",
@@ -124,35 +135,33 @@ export async function judgeRun(run: ResolvedRun): Promise<void> {
   await setRunState(run.runDir, "judged");
 }
 
-/**
- * The runner serves the outputs and closes the servers itself: a judge that
- * picked its own ports once photographed an earlier run's leftover server.
- */
+/** Judge files and any servers live only in its disposable guest. */
 async function serveAndJudge(
   run: ResolvedRun,
   judgeId: string,
   judgeDir: string,
-  inputDir: string,
   letters: JudgeOutput[],
   config: JudgeConfig,
   tools: JudgeTools,
 ): Promise<AgentExecutionResult> {
-  const servers = await serveOutputs(inputDir, letters);
+  const session = await openAgentSession(run, judgeId, judgeDir, config.agent);
   try {
-    return await executeAgent({
+    const result = await executeAgent({
       run,
       id: judgeId,
       directory: judgeDir,
       cwd: judgeDir,
       runtimeDir: join(judgeDir, ".runtime"),
       logDir: join(run.runDir, "judge", "agent"),
-      prompt: judgePrompt(run, judgeDir, letters, servers.served, tools),
+      prompt: judgePrompt(run, "/workspace", letters, [], tools),
       config,
-      frozenDirs: [join(judgeDir, ".context"), inputDir],
+      session,
       ...trackAgent(run.runDir, judgeId, (patch) => updateJudge(run.runDir, patch)),
     });
+    await session.collect();
+    return result;
   } finally {
-    await servers.close();
+    await session.close();
   }
 }
 
@@ -217,7 +226,7 @@ export function judgePrompt(
       ? "There is no second output to compare against. Score this one against the rubric on its own merits, as strictly as you would in a comparison."
       : run.config.arms.some((arm) => arm.reuse)
       ? "This comparison includes historical frozen outputs, so it is not an independent producer sample for every arm. Judge their visible quality normally. Do not infer a control treatment; use null for referenceGuess.output and 0 for its confidence."
-      : `One of the outputs is the control: it was produced without any candidate skill, tool, or setting override, and each of the others varies one of those. The control is one of ${named}, so "none of them" is not an answer; guess a letter, and say how sure you are. Use null in verdict.json only when you have nothing to tell them apart by.`,
+      : `One of the outputs is the reference configuration. Configurations may vary prompts, information, models, skills, or tools. The reference is one of ${named}; guess a letter and say how sure you are. Use null in verdict.json when you have no evidence to tell them apart.`,
     alone
       ? `Write verdict.md in your working directory. Include: scores for every rubric item, evidence, and how confident you are in the scoring. There is nothing to beat, so the winner is ${named}.`
       : `Write verdict.md in your working directory. Include: scores for every rubric item, evidence, the winner (${named}, or tie), confidence, and your guess at the control arm, with confidence in that guess.`,

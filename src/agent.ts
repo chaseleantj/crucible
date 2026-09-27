@@ -1,30 +1,25 @@
 import { spawn, execFile } from "node:child_process";
-import { createWriteStream } from "node:fs";
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
-import { finished } from "node:stream/promises";
+import { join, relative } from "node:path";
 import { promisify } from "node:util";
-import { adapterFor, armEnvironment, prepareRuntimeDirectories, scrubbedEnvironment } from "./adapters.js";
+import { adapterFor, armEnvironment, guestConfiguration, prepareRuntimeDirectories, scrubbedEnvironment } from "./adapters.js";
 import { UserError } from "./errors.js";
 import { writeJson } from "./json.js";
-import { sandboxWrap } from "./sandbox.js";
+import type { HarborSession } from "./harbor.js";
 import type { NormalizedEvent, ProducerConfig, ResolvedRun } from "./types.js";
 
 const execFileAsync = promisify(execFile);
-/** A build in a setup command can be talkative; its log should not fail the arm. */
-const SETUP_OUTPUT_LIMIT = 8 * 1024 * 1024;
 
 export interface AgentExecutionOptions {
   run: ResolvedRun;
   id: string;
   directory: string;
-  /** Where the agent starts, inside the workspace. */
   cwd: string;
   runtimeDir: string;
   logDir: string;
   prompt: string;
   config: ProducerConfig;
-  frozenDirs?: string[];
+  session: HarborSession;
   onStarted?: (details: { pid: number; processStartedAt?: string; startedAt: string }) => Promise<void>;
   onEvent?: (event: NormalizedEvent) => Promise<void>;
 }
@@ -44,185 +39,125 @@ export interface AgentExecutionResult {
   usage: Record<string, number | null> | null;
 }
 
-export interface SetupOptions {
-  run: ResolvedRun;
-  id: string;
-  directory: string;
-  /** Where the commands run, inside the workspace. */
-  cwd: string;
-  runtimeDir: string;
-  logDir: string;
-  config: ProducerConfig;
-}
+export type SetupOptions = Omit<AgentExecutionOptions, "prompt" | "onEvent" | "onStarted">;
 
-/**
- * The arm's setup commands, run in the project before the producer starts,
- * so a tool can install whatever it needs there: the shared one first, then
- * the arm's own. Each gets the arm's environment and the same sandbox profile as
- * the producer, and they share one setup.log, each under the command that
- * wrote it. Returns the failure cause, or null when there is nothing to run or
- * they all succeeded; the first failure stops the rest. The producer's clock
- * starts afterwards.
- */
+/** Setup and the agent share one guest. Setup time is excluded from agent cost. */
 export async function runSetup(options: SetupOptions): Promise<string | null> {
   const commands = options.config.setup ?? [];
   if (commands.length === 0) return null;
-  await prepareRuntimeDirectories(options.runtimeDir);
   await mkdir(options.logDir, { recursive: true, mode: 0o700 });
   const sections: string[] = [];
   let failure: string | null = null;
   for (const setup of commands) {
-    const launch = options.run.config.sandbox
-      ? await sandboxWrap(options.run, options.id, "/bin/sh", ["-c", setup], [join(options.directory, ".context")], [])
-      : { command: "/bin/sh", args: ["-c", setup] };
-    let output: string;
     try {
-      const { stdout, stderr } = await execFileAsync(launch.command, launch.args, {
-        cwd: options.cwd,
-        env: armEnvironment(scrubbedEnvironment(options.runtimeDir, options.config.agent), options.config.env),
-        maxBuffer: SETUP_OUTPUT_LIMIT,
-        timeout: options.config.timeoutMs,
+      const result = await options.session.execute({
+        command: "/bin/sh", args: ["-c", setup],
+        cwd: guestPath(options.directory, options.cwd),
+        env: guestEnvironment(armEnvironment(scrubbedEnvironment("/workspace/.runtime"), options.config.env), options.directory),
+        timeoutMs: options.config.timeoutMs,
       });
-      output = stdout + stderr;
+      sections.push(`$ ${setup}\n${result.stdout}${result.stderr}`);
+      if (result.code !== 0 || result.timedOut) failure = `Setup command ${result.timedOut ? "timed out" : `failed with ${result.code}`}: ${setup}`;
     } catch (error) {
-      const failed = error as { stdout?: string; stderr?: string; code?: number | string };
-      output = `${failed.stdout ?? ""}${failed.stderr ?? ""}`;
-      failure = `Setup command failed with ${failed.code ?? "no exit code"}: ${setup}`;
+      failure = `Setup command failed: ${setup}: ${error instanceof Error ? error.message : error}`;
+      sections.push(`$ ${setup}\n${failure}`);
     }
-    sections.push(`$ ${setup}\n${output}`);
     if (failure) break;
   }
   await writeFile(join(options.logDir, "setup.log"), sections.join("\n"), { mode: 0o600 });
   return failure;
 }
 
+export function guestPath(directory: string, path: string): string {
+  const local = relative(directory, path);
+  if (local === ".." || local.startsWith("../") || local.startsWith("/")) throw new UserError(`Path is outside the guest workspace: ${path}`);
+  return join("/workspace", local);
+}
+
+function guestEnvironment(environment: NodeJS.ProcessEnv, directory: string): Record<string, string> {
+  return guestConfiguration(Object.fromEntries(Object.entries(environment).filter((entry): entry is [string, string] => entry[1] !== undefined)), { producerDir: directory });
+}
+
+/** Keep native CLI events and usage; Harbor owns command execution and process cleanup. */
 export async function executeAgent(options: AgentExecutionOptions): Promise<AgentExecutionResult> {
   const adapter = adapterFor(options.config.agent);
-  const command = await adapter.prepare({
-    producerDir: options.directory,
-    cwd: options.cwd,
-    runtimeDir: options.runtimeDir,
-    prompt: options.prompt,
-    config: options.config,
-  });
-  const frozenDirs = options.frozenDirs ?? [join(options.directory, ".context")];
-  const launch = options.run.config.sandbox
-    ? await sandboxWrap(options.run, options.id, command.binary, command.args, frozenDirs, command.extraWriteRoots ?? [])
-    : { command: command.binary, args: command.args, profilePath: undefined };
-
+  const context = { producerDir: options.directory };
+  await prepareRuntimeDirectories(options.runtimeDir);
   await mkdir(options.logDir, { recursive: true, mode: 0o700 });
-  await writeFile(join(options.logDir, "prompt.txt"), options.prompt, { mode: 0o600 });
-  await writeJson(join(options.logDir, "launch.json"), {
-    adapter: adapter.name,
-    binary: command.binary,
-    cwd: command.cwd,
-    args: command.args.map((argument) => argument.startsWith("mcp_servers.") ? `${argument.split("=")[0]}=<private MCP configuration>` : argument.length > 500 ? `<prompt:${argument.length} chars>` : argument),
-    sandboxProfile: launch.profilePath ?? "off",
-    // Names only: one of these values could be a token.
-    ...(options.config.env ? { environment: Object.keys(options.config.env) } : {}),
+  const config = { ...options.config, ...(options.config.mcpServers ? { mcpServers: guestConfiguration(options.config.mcpServers, context) } : {}) };
+  const command = await adapter.prepare({
+    ...context, cwd: options.cwd, runtimeDir: options.runtimeDir, prompt: options.prompt, config,
+    forwardPort: (port) => options.session.forwardPort(port),
+    listCursorModels: async (env) => {
+      await options.session.upload(options.runtimeDir, "/workspace/.runtime");
+      const result = await options.session.execute({ command: "cursor-agent", args: ["--list-models"], cwd: "/workspace", env: guestEnvironment(env, options.directory), timeoutMs: 30_000 });
+      await writeJson(join(options.logDir, "model-discovery.json"), result);
+      if (result.code !== 0 || result.timedOut) throw new UserError(`Could not list Cursor models in guest${result.timedOut ? " (timed out)" : ""}: ${result.stderr}. See model-discovery.json in the agent logs.`);
+      return result.stdout;
+    },
   });
-
-  const startedAt = new Date().toISOString();
-  const child = spawn(launch.command, launch.args, {
-    cwd: command.cwd,
-    env: armEnvironment(command.env, options.config.env),
-    detached: true,
-    stdio: ["pipe", "pipe", "pipe"],
-  });
-  if (!child.pid || !child.stdin || !child.stdout || !child.stderr) throw new UserError(`Could not start agent ${options.id}`);
   try {
-    // caffeinate waits on the agent's pid, so the assertion lasts exactly as
-    // long as the run, however long that turns out to be.
-    await holdSystemAwake(child.pid);
-  } catch (error) {
-    await terminateProcessGroup(child.pid);
-    throw new UserError(`Could not keep the system awake for agent ${options.id}: ${error instanceof Error ? error.message : error}`);
-  }
-  // An agent that exits before it reads the whole prompt closes this pipe.
-  // The exit code already tells us that; a write error adds nothing.
-  child.stdin.on("error", () => {});
-  child.stdin.end(command.stdin);
-  const processStartedAt = await processStartTime(child.pid);
-  await options.onStarted?.({ pid: child.pid, ...(processStartedAt ? { processStartedAt } : {}), startedAt });
-
-  let terminationTask: Promise<void> | undefined;
-  let toolCalls = 0;
-  let terminalEvent = false;
-  let terminalSummary: string | undefined;
-  let mcpFailed = false;
-  const stdoutPath = join(options.logDir, "stdout.jsonl");
-  const outputTask = (async () => {
+    await options.session.upload(options.runtimeDir, "/workspace/.runtime");
+    await writeFile(join(options.logDir, "prompt.txt"), options.prompt, { mode: 0o600 });
+    const args = guestConfiguration(command.args, context);
+    const cwd = guestPath(options.directory, command.cwd);
+    await writeJson(join(options.logDir, "launch.json"), {
+      adapter: adapter.name, binary: command.binary, cwd,
+      args: args.map((argument) => argument.startsWith("mcp_servers.") ? `${argument.split("=")[0]}=<private MCP configuration>` : argument.length > 500 ? `<prompt:${argument.length} chars>` : argument),
+      runtime: "harbor", ...(config.env ? { environment: Object.keys(config.env) } : {}),
+    });
+    const startedAt = new Date().toISOString();
+    const pid = options.session.pid;
+    const processStartedAt = await processStartTime(pid);
+    await options.onStarted?.({ pid, ...(processStartedAt ? { processStartedAt } : {}), startedAt });
+    let toolCalls = 0;
+    let terminalEvent = false;
+    let terminalSummary: string | undefined;
+    let mcpFailed = false;
     let pending = "";
-    for await (const chunk of child.stdout!) {
-      pending += chunk.toString();
-      const parts = pending.split("\n");
-      pending = parts.pop() ?? "";
-      for (const line of parts) await recordLine(line);
-    }
-    if (pending) await recordLine(pending);
-
-    async function recordLine(line: string): Promise<void> {
+    const stdoutPath = join(options.logDir, "stdout.jsonl");
+    const recordLine = async (line: string) => {
       await appendFile(stdoutPath, `${line}\n`, { mode: 0o600 });
       for (const event of adapter.parseEvent(line, options.id)) {
-        if (event.kind === "tool.started") toolCalls += 1;
+        if (event.kind === "tool.started") toolCalls++;
         if (event.kind === "agent.completed") terminalEvent = true;
         if (event.kind.startsWith("agent.") && event.summary) terminalSummary = event.summary;
         if (event.kind === "mcp.failed" && !mcpFailed) {
-          // Stop now rather than let the arm work without its assigned tools.
           mcpFailed = true;
           terminalSummary = event.summary;
-          terminationTask = terminateProcessGroup(child.pid!);
+          // The worker handles cancellation and tears down this guest.
+          try { process.kill(pid, "SIGTERM"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
         }
         await options.onEvent?.(event);
       }
-    }
-  })();
-  const stderrStream = createWriteStream(join(options.logDir, "stderr.log"), { mode: 0o600 });
-  child.stderr.pipe(stderrStream);
-
-  let timedOut = false;
-  const timeout = setTimeout(() => {
-    timedOut = true;
-    terminationTask = terminateProcessGroup(child.pid!);
-  }, options.config.timeoutMs);
-  const exit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
-    child.once("exit", (code, signal) => resolve({ code, signal }));
-    child.once("error", () => resolve({ code: 1, signal: null }));
-  });
-  clearTimeout(timeout);
-  if (terminationTask) await terminationTask;
-  let strayProcesses = false;
-  if (!timedOut && !await waitForProcessGroupExit(child.pid, 1_000)) {
-    strayProcesses = true;
-    await terminateProcessGroup(child.pid);
+    };
+    const exit = await options.session.execute({
+      command: command.binary, args, cwd,
+      env: guestEnvironment(armEnvironment(command.env, config.env), options.directory),
+      stdin: command.stdin, timeoutMs: config.timeoutMs,
+      onStdout: async (chunk) => {
+        pending += chunk;
+        const lines = pending.split("\n");
+        pending = lines.pop() ?? "";
+        for (const line of lines) await recordLine(line);
+      },
+      onStderr: async (chunk) => { await appendFile(join(options.logDir, "stderr.log"), chunk, { mode: 0o600 }); },
+    }).catch((error: unknown) => {
+      if (mcpFailed) throw new UserError(terminalSummary ?? "An assigned MCP server did not connect");
+      throw error;
+    });
+    if (pending) await recordLine(pending);
+    const completedAt = new Date().toISOString();
+    return {
+      succeeded: exit.code === 0 && !exit.timedOut && terminalEvent && !mcpFailed,
+      pid, startedAt, completedAt, exitCode: exit.code, signal: null,
+      timedOut: exit.timedOut, terminalEvent, ...(terminalSummary ? { terminalSummary } : {}),
+      strayProcesses: false, toolCalls,
+      usage: adapter.collectUsage(await readFile(stdoutPath, "utf8").catch(() => "")),
+    };
+  } finally {
+    await command.release?.();
   }
-  let drainTimer: NodeJS.Timeout | undefined;
-  await Promise.race([
-    outputTask.finally(() => { if (drainTimer) clearTimeout(drainTimer); }),
-    new Promise<void>((resolve) => {
-      drainTimer = setTimeout(() => {
-        child.stdout?.destroy();
-        resolve();
-      }, 2_000);
-    }),
-  ]);
-  await finished(stderrStream);
-  const completedAt = new Date().toISOString();
-  const usage = adapter.collectUsage(await readFile(stdoutPath, "utf8").catch(() => ""));
-  return {
-    succeeded: exit.code === 0 && !timedOut && terminalEvent && !strayProcesses && !mcpFailed,
-    pid: child.pid,
-    startedAt,
-    completedAt,
-    exitCode: exit.code,
-    signal: exit.signal,
-    timedOut,
-    terminalEvent,
-    ...(terminalSummary ? { terminalSummary } : {}),
-    strayProcesses,
-    toolCalls,
-    usage,
-  };
 }
 
 export async function holdSystemAwake(pid: number, platform = process.platform): Promise<void> {
@@ -288,15 +223,6 @@ function killProcessGroup(processGroupId: number, signal: NodeJS.Signals, send: 
     // stray-process report rather than taking the run down over cleanup.
     if (code !== "ESRCH" && code !== "EPERM") throw error;
   }
-}
-
-async function waitForProcessGroupExit(processGroupId: number, timeoutMs: number): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (!processGroupExists(processGroupId)) return true;
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-  return !processGroupExists(processGroupId);
 }
 
 function processGroupExists(processGroupId: number, send: SignalProbe = sendSignal): boolean {

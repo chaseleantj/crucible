@@ -1,7 +1,7 @@
 name: Candidate skill comparison
 # series: example-skill   # group repeated runs of one question; `crucible series example-skill` tallies them
 
-# One to six arms. The first is the one the others are compared against.
+# One to ten arms. The first is the one the others are compared against.
 # A label is optional: the default says what the arm varied, and two arms that
 # vary the same thing are a replicate that has to be labelled by hand.
 # A single arm is scored against the rubric alone, with no winner and no margin.
@@ -54,8 +54,11 @@ subagents:
   # root: ~/.claude/agents
   exclude: []
 
-# sandbox: false disables the Seatbelt profile; the scrubbed home still applies.
-sandbox: true
+# Every arm and judge runs in a fresh Linux guest. Capacity is shared across runs.
+runtime:
+  concurrency: 2
+  cpus: 2
+  memoryMb: 4096
 
 # judge: none   # instead of the block below: produce the arms, let the runner capture their
 #               # pages, and report what they cost, with nothing scored or ranked
@@ -73,7 +76,12 @@ cleanup: manual # manual or automatic
 # producer:
 #   mcpServers:
 #     blender:
-#       command: /opt/homebrew/bin/uvx
+#       command: uvx
 #       args: [blender-mcp]
 #       env: {DISABLE_TELEMETRY: "true"}
-# Keep sandbox on; reset external application state between producers.
+# Install the MCP server and any dependencies inside the Linux guest.
+
+# An arm can also override task and receive private input files:
+# - label: with-picture
+#   task: Draw an SVG using /workspace/.context/inputs/reference.png.
+#   inputs: {reference.png: ./reference.png}

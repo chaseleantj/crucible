@@ -1,25 +1,23 @@
-import { execFile } from "node:child_process";
-import { mkdir, stat, symlink } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat } from "node:fs/promises";
 import { basename, join } from "node:path";
-import { promisify } from "node:util";
-import { authProblem, binaryNames, resolveBinary } from "./adapters.js";
-import { executeAgent, processMatches, runSetup, terminateProcessGroup, type AgentExecutionResult } from "./agent.js";
+import { tmpdir } from "node:os";
+import { authProblem, prepareRuntimeDirectories } from "./adapters.js";
+import { executeAgent, holdSystemAwake, processMatches, processStartTime, runSetup, terminateProcessGroup, type AgentExecutionResult } from "./agent.js";
 import { auditRun } from "./audit.js";
 import { armChanges, recordBaseline } from "./baseline.js";
-import { armFor, producerFor } from "./config.js";
+import { armFor, assertGuestCompatible, producerFor, runtimeFor, taskFor } from "./config.js";
 import { UserError, errorMessage } from "./errors.js";
 import { collectProjectInstructions, copyTree, makeReadOnly, removeTree } from "./files.js";
 import { agentAtWork } from "./health.js";
 import { readJson, writeJson } from "./json.js";
-import { runSandboxProbes } from "./sandbox.js";
+import { harborChecks, openHarbor, type HarborSession } from "./harbor.js";
 import { skillLoader, type SkillCatalogEntry } from "./skills.js";
 import { subagentLoader, type SubagentCatalogEntry } from "./subagents.js";
 import { appendRunEvent, readRunState, resetProducer, setRunState, trackAgent, updateJudge, updateProducer } from "./state.js";
 import type { AgentName, ProducerStatus, ResolvedRun, StartCheck } from "./types.js";
 
-const execFileAsync = promisify(execFile);
-
 export async function startRun(run: ResolvedRun): Promise<void> {
+  assertGuestCompatible(run.config.sandbox, run.config.nodeModules);
   const view = await readRunState(run.runDir);
   if (view.state === "running") {
     throw new UserError(`Run is already marked running. Follow it with: crucible status ${run.runId} --watch, or stop it first: crucible stop ${run.runId}`);
@@ -48,9 +46,10 @@ export async function startRun(run: ResolvedRun): Promise<void> {
 
   await setRunState(run.runDir, "running");
   const results = await Promise.all(pending.map(async (producerId) => ({ producerId, error: await runProducer(run, producerId) })));
+  if ((await readRunState(run.runDir)).state === "stopped") return;
   const failures = results.filter((result) => result.error);
   if (failures.length > 0) {
-    await setRunState(run.runDir, "failed");
+    await setRunState(run.runDir, "failed", "running");
     throw new UserError([
       "One or more producers failed:",
       ...failures.map((failure) => `- ${failure.producerId}: ${failure.error}`),
@@ -62,8 +61,10 @@ export async function startRun(run: ResolvedRun): Promise<void> {
 
 /** What happens once every producer is complete: the audit, and the state that lets the judge begin. */
 async function finishRun(run: ResolvedRun): Promise<void> {
+  const state = (await readRunState(run.runDir)).state;
+  if (state === "stopped") return;
   const audit = await auditRun(run);
-  await setRunState(run.runDir, "produced");
+  await setRunState(run.runDir, "produced", state);
   if (audit.warnings.length > 0) {
     process.stderr.write(`Audit recorded ${audit.warnings.length} warning(s); they will appear in the report.\n`);
   }
@@ -81,18 +82,7 @@ async function materializeWorkspace(run: ResolvedRun, producerId: string): Promi
   await copyTree(join(run.runDir, "frozen", "source"), join(producerDir, "source"));
   await copyTree(join(run.runDir, "frozen", producerId, "context"), join(producerDir, ".context"));
   await makeReadOnly(join(producerDir, ".context"));
-  await linkSharedPackages(run.config.nodeModules, producerDir);
-}
-
-/**
- * A frozen skill's scripts import packages by bare name and resolve them by
- * walking up from their own location, the way they do where the skills live.
- * Linking the configured node_modules at the top of the workspace keeps that
- * walk working. The judge's packages are linked by linkJudgePackages instead.
- */
-export async function linkSharedPackages(nodeModules: string | null, workspaceDir: string): Promise<void> {
-  if (!nodeModules || !(await stat(nodeModules).catch(() => null))?.isDirectory()) return;
-  await symlink(nodeModules, join(workspaceDir, "node_modules"));
+  await prepareRuntimeDirectories(join(producerDir, ".runtime"));
 }
 
 async function runStartChecks(run: ResolvedRun, pending: string[]): Promise<StartCheck[]> {
@@ -103,29 +93,72 @@ async function runStartChecks(run: ResolvedRun, pending: string[]): Promise<Star
     .filter((arm) => !arm.reuse)
     .map((arm) => producerFor(run.config.producer, arm).agent);
   checks.push(...await agentChecks(new Set([...producers, ...(run.config.judge ? [run.config.judge.agent] : [])])));
-  if (run.config.sandbox) {
-    for (const producerId of pending) checks.push(...await runSandboxProbes(run, producerId));
-  } else {
-    checks.push({ name: "sandbox", passed: true, detail: "disabled by experiment config" });
-  }
+  checks.push(...await harborChecks());
   return checks;
 }
 
-/** Each agent's CLI answers --version and has a credential to run with. */
+/** Host authentication is checked without requiring host agent installations. */
 export async function agentChecks(agents: Iterable<AgentName>): Promise<StartCheck[]> {
   const checks: StartCheck[] = [];
   for (const agent of agents) {
-    try {
-      const binary = await resolveBinary(binaryNames(agent));
-      const { stdout, stderr } = await execFileAsync(binary, ["--version"], { timeout: 10_000 });
-      checks.push({ name: `${agent} CLI`, passed: true, detail: `${binary}: ${(stdout || stderr).trim()}` });
-    } catch (error) {
-      checks.push({ name: `${agent} CLI`, passed: false, detail: errorMessage(error) });
-    }
     const problem = await authProblem(agent);
     checks.push({ name: `${agent} auth`, passed: !problem, ...(problem ? { detail: problem } : {}) });
   }
   return checks;
+}
+
+/** Register the worker before it queues or boots so stop also cancels startup. */
+export async function openAgentSession(run: ResolvedRun, id: string, directory: string, agent: AgentName): Promise<HarborSession> {
+  const runtime = runtimeFor(run.config);
+  const requestedAt = new Date().toISOString();
+  const update = (patch: Partial<ProducerStatus>) => id.startsWith("j-") ? updateJudge(run.runDir, patch) : updateProducer(run.runDir, id, patch);
+  const session = await openHarbor({
+    workspace: directory, cpus: runtime.cpus, memoryMb: runtime.memoryMb, maxConcurrent: runtime.concurrency,
+    onStarted: async ({ pid }) => {
+      const processStartedAt = await processStartTime(pid);
+      await update({ state: "running", pid, ...(processStartedAt ? { processStartedAt } : {}) });
+      const state = await readRunState(run.runDir);
+      const row = id.startsWith("j-") ? state.judge : state.producers[id];
+      if (row?.state === "stopped" || state.state === "stopped") {
+        process.kill(pid, "SIGTERM");
+        throw new UserError("Stopped by user");
+      }
+      await holdSystemAwake(pid);
+    },
+  });
+  try {
+    const logDir = id.startsWith("j-") ? join(run.runDir, "judge", "agent") : join(run.runDir, "producers", id);
+    await writeJson(join(logDir, "runtime.json"), { requestedAt, readyAt: new Date().toISOString(), ...runtime, ...session.metadata });
+    await uploadGuestCatalogs(session, directory);
+    const binary = agent === "cursor" ? "cursor-agent" : agent;
+    const readiness = await session.execute({ command: binary, args: ["--version"], cwd: "/workspace", timeoutMs: 30_000 });
+    if (readiness.code !== 0) throw new UserError(`Guest ${agent} CLI is unavailable: ${readiness.stderr}`);
+    return session;
+  } catch (error) {
+    await session.close();
+    throw error;
+  }
+}
+
+/** Agents need discovery metadata, not the experiment's treatment annotation. */
+export function executionCatalog(catalog: Array<Pick<SkillCatalogEntry, "name" | "description" | "path">>): Array<Pick<SkillCatalogEntry, "name" | "description" | "path">> {
+  return catalog.map(({ name, description, path }) => ({ name, description, path }));
+}
+
+async function uploadGuestCatalogs(session: HarborSession, directory: string): Promise<void> {
+  const temporary = await mkdtemp(join(tmpdir(), "crucible-guest-catalogs-"));
+  try {
+    for (const filename of ["skill-catalog.json", "subagent-catalog.json"]) {
+      const source = join(directory, ".context", filename);
+      if (!(await stat(source).catch(() => null))?.isFile()) continue;
+      const catalog = await readJson<SkillCatalogEntry[]>(source);
+      const sanitized = join(temporary, filename);
+      await writeJson(sanitized, executionCatalog(catalog));
+      await session.upload(sanitized, `/workspace/.context/${filename}`);
+    }
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
 }
 
 /** Runs one producer to completion and returns the failure cause, or null on success. */
@@ -155,28 +188,32 @@ async function runProducer(run: ResolvedRun, producerId: string): Promise<string
     return message;
   };
 
-  // The setup command runs before the producer and outside its clock, so an
-  // arm whose tool cannot be built never starts.
-  const setupFailure = await runSetup({ run, id: producerId, directory: producerDir, cwd: sourceDir, runtimeDir, logDir, config });
-  if (setupFailure) return fail(setupFailure);
-  await recordBaseline(run, producerId);
-
-  let result;
+  let result: AgentExecutionResult;
+  let session: HarborSession | undefined;
   try {
+    if (config.settings) {
+      const frozenSettings = join(producerDir, ".context", "claude-settings.json");
+      if (!(await stat(frozenSettings).catch(() => null))?.isFile()) throw new UserError("This run has no frozen Claude settings. Prepare it again with the Harbor runner.");
+      config.settings = frozenSettings;
+    }
+    session = await openAgentSession(run, producerId, producerDir, config.agent);
+    const setupFailure = await runSetup({ run, id: producerId, directory: producerDir, cwd: sourceDir, runtimeDir, logDir, config, session });
+    if (setupFailure) return await fail(setupFailure);
+    // Freeze the baseline after setup, matching the files the agent will see.
+    await session.collect("source");
+    await recordBaseline(run, producerId);
     result = await executeAgent({
-      run,
-      id: producerId,
-      directory: producerDir,
-      cwd: sourceDir,
-      runtimeDir,
-      logDir,
-      prompt: await producerPrompt(run, producerId),
-      config,
+      run, id: producerId, directory: producerDir, cwd: sourceDir, runtimeDir, logDir,
+      prompt: await producerPrompt(run, producerId), config, session,
       ...trackAgent(run.runDir, producerId, (patch) => updateProducer(run.runDir, producerId, patch)),
     });
+    await session.collect("source");
   } catch (error) {
-    return fail(errorMessage(error));
+    return await fail(errorMessage(error));
+  } finally {
+    await session?.close();
   }
+  if ((await readRunState(run.runDir)).producers[producerId]?.state === "stopped") return "Stopped by user";
 
   const outcome = completionOutcome(result, result.timedOut && await changedSource(run, producerId));
   await updateProducer(run.runDir, producerId, {
@@ -239,18 +276,20 @@ async function producerPrompt(run: ResolvedRun, producerId: string): Promise<str
   // in a real project.
   const projectInstructions = await collectProjectInstructions(join(producerDir, "source"));
   const sections = [
-    run.config.task,
+    taskFor(run.config, armFor(run.config, run.assignment.arms[producerId]!)),
     "",
-    `You start in ${join(producerDir, "source")}. Work only inside it; do not modify files outside that directory.`,
+    "You start in /workspace/source. Work only inside it; do not modify files outside that directory.",
     "",
     "Project instructions:",
     projectInstructions || "No project instructions were selected.",
     "",
-    skillLoader(catalog, join(producerDir, ".context"), await sharedSnapshots(run, producerDir)),
+    skillLoader(catalog, "/workspace/.context", await sharedSnapshots(run, producerDir)),
   ];
   const { agent } = producerFor(run.config.producer, armFor(run.config, run.assignment.arms[producerId]!));
-  const subagentSection = subagentLoader(subagents, agent, join(producerDir, ".context"));
+  const subagentSection = subagentLoader(subagents, agent, "/workspace/.context");
   if (subagentSection) sections.push("", subagentSection);
+  const inputs = armFor(run.config, run.assignment.arms[producerId]!).inputs;
+  if (inputs && Object.keys(inputs).length) sections.push("", "Additional inputs:", ...Object.keys(inputs).map((name) => `/workspace/.context/inputs/${name}`));
   return sections.join("\n");
 }
 
@@ -274,6 +313,7 @@ async function sharedSnapshots(run: ResolvedRun, producerDir: string): Promise<s
 export async function stopRun(run: ResolvedRun): Promise<void> {
   const view = await readRunState(run.runDir);
   const producers = Object.entries(view.producers).filter(([, producer]) => agentAtWork(producer, view.state));
+  if (view.state === "running") await setRunState(run.runDir, "stopped");
   for (const [producerId, producer] of producers) await stopAgent(producer, (patch) => updateProducer(run.runDir, producerId, patch));
   const judge = view.judge && agentAtWork(view.judge, view.state) ? view.judge : null;
   if (judge) await stopAgent(judge, (patch) => updateJudge(run.runDir, patch));
@@ -285,6 +325,6 @@ export async function stopRun(run: ResolvedRun): Promise<void> {
 }
 
 async function stopAgent(agent: ProducerStatus, update: (patch: Partial<ProducerStatus>) => Promise<unknown>): Promise<void> {
-  if (agent.pid && await processMatches(agent.pid, agent.processStartedAt)) await terminateProcessGroup(agent.pid);
   await update({ state: "stopped", completedAt: new Date().toISOString(), error: "Stopped by user" });
+  if (agent.pid && await processMatches(agent.pid, agent.processStartedAt)) await terminateProcessGroup(agent.pid, 60_000);
 }

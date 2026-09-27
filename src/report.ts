@@ -1,9 +1,10 @@
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { AuditReport } from "./audit.js";
 import { UserError } from "./errors.js";
+import { agentScratch } from "./paths.js";
 import { removeTree, sha256File, manifestFingerprint, writePrivateFile } from "./files.js";
-import { agentIdentity, armFor, describeIdentity, describeToolSetup, environmentFor, producerFor } from "./config.js";
+import { agentIdentity, armFor, describeIdentity, describeToolSetup, environmentFor, producerFor, taskFor } from "./config.js";
 import { describeSharedMaterial } from "./skills.js";
 import { armCost, describeCost, type CostRecord } from "./cost.js";
 import { NOT_JUDGED_NOTE, RUNNER_CAPTURE_NOTE, describeOutcome, renderReportHtml } from "./html.js";
@@ -75,6 +76,8 @@ export async function reportRun(run: ResolvedRun): Promise<string> {
     environment: environments.every((environment) => environment === environments[0]) ? environments[0]! : "mixed",
     arms: arms.map((arm, index) => ({
       label: arm.label,
+      task: taskFor(run.config, arm),
+      inputs: reused[arm.label]?.inputs ?? Object.keys(arm.inputs ?? {}),
       environment: environments[index]!,
       ...(arm.reuse ? { reuse: arm.reuse } : {}),
       candidate: arm.candidate?.path ?? null,
@@ -120,9 +123,11 @@ export async function reportRun(run: ResolvedRun): Promise<string> {
     ...sharedMaterial,
     // A clean run has no baseline to withhold skills from.
     ...(produced.environment === "clean" ? [] : [`Baseline skills withheld: ${run.config.skills.exclude.join(", ") || "none"}`]),
-    ...(arms.some((arm) => arm.candidate || arm.reuse) ? [] : ["No candidate skill: the arms differ only in producer settings"]),
+    ...(arms.some((arm) => arm.candidate || arm.reuse) ? [] : ["No candidate skill: the arms compare producer settings, prompts, or information"]),
+    ...produced.arms.filter((arm) => arm.task !== run.config.task).map((arm) => `Task (${arm.label}): ${arm.task}`),
+    ...produced.arms.filter((arm) => arm.inputs?.length).map((arm) => `Inputs (${arm.label}): ${arm.inputs!.join(", ")}`),
     ...arms.filter((arm) => arm.candidate?.replaces).map((arm) => `${arm.label} replaces the baseline skill: ${arm.candidate!.replaces}`),
-    `Sandbox: ${run.config.sandbox ? "deny-list Seatbelt profile" : "off (scrubbed environment only)"}`,
+    `Sandbox: ${run.config.runtime ? "Harbor Linux guest (Apple Container)" : run.config.sandbox ? "legacy Seatbelt profile" : "legacy host execution"}`,
     `Runtime: Node ${process.version}`,
     ...(checks?.checks ?? []).filter((check) => check.name.endsWith(" CLI")).map((check) => `${check.name}: ${check.detail ?? "available"}`),
   ];
@@ -271,7 +276,11 @@ export async function cleanRun(run: RunLocation): Promise<string[]> {
   if (state.state === "running") {
     throw new UserError(`Refusing cleanup while producers run; stop the run first: crucible stop ${run.runId}`);
   }
+  const agents = await readdir(run.tempDir).catch(() => [] as string[]);
   await removeTree(run.tempDir);
+  // Each agent's scratch under /tmp goes too: Cursor keeps its chats there.
+  const scratch = agents.filter((name) => /^[pj]-[0-9a-f]+$/.test(name)).map(agentScratch);
+  for (const path of scratch) await removeTree(path);
   if (state.state === "reported") await setRunState(run.runDir, "cleaned");
-  return [run.tempDir];
+  return [run.tempDir, ...scratch];
 }

@@ -1,24 +1,24 @@
 # Agent credentials
 
-Every A/B run starts one producer per arm and, unless the experiment sets `judge: none`, a judge. Each needs to log in to its provider. Producers run inside a scrubbed environment with a fake home directory, so they cannot see your normal login — the runner has to hand them a credential deliberately. This page explains where each credential comes from and how to set them up on a new machine.
+Every run starts one agent per arm and, unless the experiment sets `judge: none`, a judge. Each needs provider authentication. Crucible reads each supported login itself, on the host, outside the Linux guest, and gives the agent a random stand-in token instead. A small proxy inside Crucible (the credential broker) swaps the stand-in for the real login on the way to the provider, and only on that provider's API paths. The guest receives no real provider token or refresh token, and the host home and keychain are not mounted. Unsupported authentication flows are rejected, as described below.
 
-`crucible start` checks all of this before it launches anything, and `crucible doctor` runs the same checks without a run. If a credential is missing it says which one and stops, rather than letting the agent start and fail a second later with "not logged in".
+`crucible start` checks each login before it launches anything, and `crucible doctor` runs the same checks without a run. If a login is missing it says which one and stops.
 
 ## Claude
 
-Claude producers authenticate with a long-lived token, stored in your macOS login keychain under the name `CLAUDE_CODE_OAUTH_TOKEN`. The runner reads it from the keychain when it needs it. Nothing else is required — no shell setup, no environment variable.
+Crucible uses a long-lived token stored in your macOS login keychain under the name `CLAUDE_CODE_OAUTH_TOKEN`. If you have exported `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, or `CLAUDE_CODE_OAUTH_TOKEN`, it uses that instead, and an `ANTHROPIC_BASE_URL` you set becomes where the broker sends requests.
 
-If you have already exported a Claude credential in your environment, the runner uses that instead and leaves the keychain alone.
+**Do not export the token in `~/.zshrc`.** A token session does not carry your organization or subscription details, so Claude Code quietly drops the newest models from your own sessions. Crucible already reads the token from the keychain.
 
-**Do not export the token in `~/.zshrc`.** It is tempting, because it makes the token available everywhere, and that is exactly the problem. A token session does not carry your organization or subscription details. Claude Code then has no way to know which models your team plan entitles you to, and quietly drops the newest ones from the model picker. Exporting the token globally costs you model access in your own sessions and buys nothing — the runner already fetches it on its own.
+Claude on Bedrock or Vertex (`CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX`) is not supported by the Harbor runtime because the credential broker does not handle those authentication flows. Use an Anthropic API key or Claude login instead.
 
 ## Codex
 
-Codex uses whatever `codex login` wrote to `~/.codex/auth.json`. The runner copies that file into the producer's fake home. You can also set `OPENAI_API_KEY` instead.
+Crucible reads the login that `codex login` wrote to `~/.codex/auth.json`, or `OPENAI_API_KEY`. It reads the current access token on every request, so when your own Codex refreshes the login, runs pick that up. The agent's copy of `auth.json` holds only stand-ins, with no refresh token. If the access token would expire before an agent's timeout, `crucible start` says so: run any `codex` command to refresh it.
 
 ## Cursor
 
-Cursor works the same way: log in with `agent login` and the runner copies `~/.cursor/auth.json` across. Cursor also stores credentials in the keychain, which the runner reads as a fallback, and `CURSOR_API_KEY` works too.
+Crucible reads the login that `cursor-agent login` stored, from `~/.cursor/auth.json` or the keychain, the same way as Codex. The guest receives the same broker stand-in in its auth file and `CURSOR_AUTH_TOKEN`, which the Linux CLI uses to find its login. A `CURSOR_API_KEY` with no login is rejected because the broker does not handle that exchange. Sign in with `agent login` first.
 
 ## Setting up on a new machine
 
@@ -41,14 +41,12 @@ security add-generic-password -s CLAUDE_CODE_OAUTH_TOKEN -a "$USER" -W
 
 The `-W` flag prompts for the value, so the token never appears in your shell history. The service name has to match exactly, because that is the name the runner looks up.
 
-**3. Build and check.**
+**3. Check.**
 
 ```sh
-npm ci
-npm run build
-npm test
+crucible doctor
 ```
 
-The tests do not touch your real keychain, so they pass on any machine, set up or not. To confirm the credentials themselves are right, run `crucible doctor` and read the check it prints.
+It checks provider logins and runtime prerequisites. Guest CLIs use those logins through the broker; your host home and keychain are not mounted into their Linux guests.
 
 `claude setup-token` shows the token once and never again. If you are replacing a machine and would rather not create a new one, copy the keychain entry across with Keychain Access before you wipe the old one.

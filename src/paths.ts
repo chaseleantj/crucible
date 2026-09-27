@@ -41,3 +41,6 @@ function hasInstalledBrowser(browsersPath: string): boolean {
 export function runDirectory(runId: string, paths = pathsConfig()): string {
   return join(paths.runRoot, runId);
 }
+
+/** Where an agent's scratch lives outside its workspace: short, because Cursor needs a short path. */
+export const agentScratch = (id: string) => join("/tmp", `crucible-${id}`);

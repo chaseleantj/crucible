@@ -60,6 +60,10 @@ export interface ReuseConfig {
 
 export interface ArmConfig {
   label: string;
+  /** This arm's task; absent means the shared experiment task. */
+  task?: string;
+  /** Guest file/directory name to host source, frozen only into this arm. */
+  inputs?: Record<string, string>;
   /** Snapshot a completed historical output instead of launching a producer. */
   reuse?: ReuseConfig;
   candidate?: CandidateConfig;
@@ -95,21 +99,30 @@ export interface JudgeConfig extends ProducerConfig {
   rubric: string;
 }
 
+export interface RuntimeConfig {
+  concurrency: number;
+  cpus: number;
+  memoryMb: number;
+}
+
 export interface ExperimentConfig {
   name: string;
   /** Groups repeated runs of one question so their verdicts can be tallied together. */
   series?: string;
-  /** One to six arms, the reference first. */
+  /** One to ten arms, the reference first. */
   arms: ArmConfig[];
   source: SourceConfig;
   task: string;
   producer: ProducerConfig;
   skills: SkillsConfig;
   subagents: SubagentsConfig;
+  /** Absent on archived runs created before the Harbor backend. */
+  runtime?: RuntimeConfig;
+  /** Legacy record field. New runs always use an isolated guest. */
   sandbox: boolean;
   /** Null for `judge: none`: the outputs are produced, captured, and reported without a verdict. */
   judge: JudgeConfig | null;
-  /** A node_modules folder linked into every workspace so frozen skills' scripts resolve their packages; null for none. */
+  /** Legacy record field; host packages cannot be shared with Linux guests. */
   nodeModules: string | null;
   /** Whether a complete `crucible run` copies itself into the archive when the report is sealed. */
   archive: boolean;
@@ -311,6 +324,10 @@ export interface AgentIdentity {
 /** What one arm varied, as the report and any dashboard read it. */
 export interface ResultArm {
   label: string;
+  /** Effective producer prompt, revealed with the result; absent on older results. */
+  task?: string;
+  /** Guest input names only; source paths remain in private run records. */
+  inputs?: string[];
   /** Absent in results written before arms could differ in environment. */
   environment?: SkillEnvironment;
   reuse?: ReuseConfig;

@@ -36,6 +36,13 @@ export async function fetchSnapshot(): Promise<Snapshot> {
   if (!response.ok) {
     const body = await response.json().catch(() => null);
     const said = typeof body?.error === "string" ? body.error : null;
+    if (response.status === 401) {
+      throw new LoadError({
+        message: "This browser isn't signed in to the dashboard.",
+        hint: "Open it from the terminal, which signs this browser in:",
+        command: "crucible ui",
+      });
+    }
     throw new LoadError(response.status >= 500
       ? {
           message: `The dashboard server failed while reading the results${said ? `: ${said}` : "."}`,

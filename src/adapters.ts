@@ -1,11 +1,12 @@
 import { execFile } from "node:child_process";
 import { constants } from "node:fs";
-import { access, chmod, copyFile, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
+import { rootCertificates } from "node:tls";
 import { basename, join } from "node:path";
 import { promisify } from "node:util";
+import { secondsLeft, standInToken, startBroker, tokenClaims } from "./credentials.js";
 import { UserError } from "./errors.js";
-import { playwrightBrowsersPath } from "./paths.js";
 import { SUBAGENT_PLUGIN, type SubagentCatalogEntry } from "./subagents.js";
 import type { AgentName, NormalizedEvent, ProducerConfig, TokenCounts } from "./types.js";
 
@@ -18,6 +19,9 @@ export interface AdapterContext {
   runtimeDir: string;
   prompt: string;
   config: ProducerConfig;
+  /** Make a host broker reachable at guest loopback without exposing its secret. */
+  forwardPort?: (port: number) => Promise<number>;
+  listCursorModels?: (env: NodeJS.ProcessEnv) => Promise<string>;
 }
 
 export interface AdapterCommand {
@@ -26,7 +30,8 @@ export interface AdapterCommand {
   cwd: string;
   env: NodeJS.ProcessEnv;
   stdin: string;
-  extraWriteRoots?: string[];
+  /** Stops what the command needed while it ran, such as its credential broker. */
+  release?: () => Promise<void>;
 }
 
 export interface AgentAdapter {
@@ -53,8 +58,14 @@ export const AUTH_ENVIRONMENT: Record<AgentName, Set<string>> = {
     "AWS_REGION",
   ]),
   codex: new Set(["OPENAI_API_KEY"]),
-  cursor: new Set(["CURSOR_API_KEY", "CURSOR_API_ENDPOINT"]),
+  cursor: new Set(["CURSOR_API_KEY", "CURSOR_AUTH_TOKEN", "CURSOR_API_ENDPOINT"]),
 };
+
+/** Agent configuration cannot replace the broker's authentication or routing. */
+export const BROKER_ENVIRONMENT_VARIABLES = new Set([
+  ...Object.values(AUTH_ENVIRONMENT).flatMap((names) => [...names]),
+  "OPENAI_BASE_URL", "CODEX_HOME", "CODEX_CA_CERTIFICATE", "CURSOR_DATA_DIR", "CURSOR_CONFIG_DIR",
+]);
 
 /**
  * No shell exports a Claude token any more, so fall back to the login keychain
@@ -79,45 +90,14 @@ export function setClaudeTokenReader(reader: TokenReader = readClaudeKeychain): 
   claudeKeychainLookup = undefined;
 }
 
-/** Variables the CLI needs forwarded but that do not log anyone in on their own. */
-const CLAUDE_ROUTING_VARIABLES = new Set(["ANTHROPIC_BASE_URL"]);
-
 function claudeEnvironmentCredential(): boolean {
-  return [...AUTH_ENVIRONMENT.claude].some((name) => !CLAUDE_ROUTING_VARIABLES.has(name) && process.env[name]);
+  return ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"].some((name) => !!process.env[name]);
 }
 
 export function adapterFor(name: AgentName): AgentAdapter {
   if (name === "claude") return claudeAdapter;
   if (name === "codex") return codexAdapter;
   return cursorAdapter;
-}
-
-export function binaryNames(agent: AgentName): string[] {
-  return agent === "cursor" ? ["agent", "cursor-agent"] : [agent];
-}
-
-export async function resolveBinary(names: string[]): Promise<string> {
-  const pathEntries = (process.env.PATH ?? "").split(":");
-  for (const name of names) {
-    if (name.includes("/")) {
-      try {
-        await access(name, constants.X_OK);
-        return await realpath(name);
-      } catch {
-        continue;
-      }
-    }
-    for (const directory of pathEntries) {
-      const path = join(directory, name);
-      try {
-        await access(path, constants.X_OK);
-        return await realpath(path);
-      } catch {
-        // Try the next PATH entry.
-      }
-    }
-  }
-  throw new UserError(`Required agent CLI not found: ${names.join(" or ")}`);
 }
 
 /** The scrubbed home's own directories, each named by the variable that points at it. */
@@ -128,27 +108,69 @@ export const ISOLATION_VARIABLES = Object.keys(ISOLATION_DIRECTORIES);
 
 /**
  * A scrubbed home is what keeps a producer from finding the live skills,
- * instructions, and session state of this machine. Provider credentials are
- * the one thing deliberately passed back through the environment.
+ * instructions, and session state of this machine. It carries no credential:
+ * each adapter adds a stand-in and the address of its credential broker, so
+ * setup commands and anything else an arm runs never see a real one.
  */
-export function scrubbedEnvironment(runtimeDir: string, agent: AgentName): NodeJS.ProcessEnv {
+export function scrubbedEnvironment(runtimeDir: string): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
     ...Object.fromEntries(Object.entries(ISOLATION_DIRECTORIES).map(([name, directory]) => [name, join(runtimeDir, directory)])),
-    // The scrubbed home hides Playwright's browser build from any
-    // screenshot tool. Point them back at the real one.
-    PLAYWRIGHT_BROWSERS_PATH: playwrightBrowsersPath(),
-    PATH: process.env.PATH ?? "/usr/bin:/bin",
-    SHELL: process.env.SHELL ?? "/bin/sh",
+    // Browser and Node packages are installed in the pinned Linux image.
+    PLAYWRIGHT_BROWSERS_PATH: "/opt/playwright",
+    NODE_PATH: "/usr/local/lib/node_modules",
+    PATH: "/usr/local/bin:/usr/bin:/bin",
+    SHELL: "/bin/bash",
     LANG: process.env.LANG ?? "en_US.UTF-8",
     TERM: "dumb",
     CI: "1",
     NO_COLOR: "1",
   };
   for (const [name, value] of Object.entries(process.env)) {
-    const providerCredential = AUTH_ENVIRONMENT[agent].has(name) || (agent === "claude" && name.startsWith("AWS_"));
-    if (value && (providerCredential || name.startsWith("LC_"))) env[name] = value;
+    if (value && name.startsWith("LC_")) env[name] = value;
   }
   return env;
+}
+
+/** Where a broker notes the requests it refused, by method and path only. */
+const brokerLog = (runtimeDir: string) => join(runtimeDir, "credential-broker.log");
+
+/**
+ * A login token the CLI refreshes itself has to outlast the agent: the broker
+ * reads the current one on every request, but only the user's own CLI can
+ * renew it.
+ */
+function requireLasting(token: string, timeoutMs: number, renew: string): void {
+  const left = secondsLeft(token);
+  if (left !== null && left < timeoutMs / 1000 + 300) {
+    throw new UserError(`${renew} Its login token ${left <= 0 ? "has expired" : `expires in ${Math.max(1, Math.round(left / 60))} minutes`}, before this agent's timeout.`);
+  }
+}
+
+/** Anthropic API paths Claude Code needs; anything else through the broker is refused. */
+const CLAUDE_PATHS = ["/v1/messages", "/v1/models", "/api/hello"];
+
+/**
+ * Claude's credential stays in this process. The agent gets a stand-in in the
+ * variable the real credential would use, and ANTHROPIC_BASE_URL pointing at
+ * a broker that swaps it back. Bedrock and Vertex sign each request with the
+ * cloud credentials themselves; those modes require a separate broker and are refused.
+ */
+async function claudeAccess(env: NodeJS.ProcessEnv, runtimeDir: string, context: AdapterContext): Promise<(() => Promise<void>) | undefined> {
+  if (process.env.CLAUDE_CODE_USE_BEDROCK || process.env.CLAUDE_CODE_USE_VERTEX) {
+    throw new UserError("Harbor runs do not support Bedrock or Vertex credentials. Use an Anthropic API key or Claude login through the credential broker.");
+  }
+  const variable = process.env.ANTHROPIC_API_KEY ? "ANTHROPIC_API_KEY" : process.env.ANTHROPIC_AUTH_TOKEN ? "ANTHROPIC_AUTH_TOKEN" : "CLAUDE_CODE_OAUTH_TOKEN";
+  const secret = process.env[variable] ?? await claudeKeychainToken();
+  if (!secret) throw new UserError("No Claude credential in the environment or the login keychain. Store CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`) in the keychain, or export it or an API key.");
+  const broker = await guestBroker(context, {
+    upstream: process.env.ANTHROPIC_BASE_URL ?? "https://api.anthropic.com",
+    allow: CLAUDE_PATHS,
+    secret: async () => secret,
+    logFile: brokerLog(runtimeDir),
+  });
+  env[variable] = broker.standIn;
+  env.ANTHROPIC_BASE_URL = broker.url;
+  return broker.close;
 }
 
 /**
@@ -174,6 +196,7 @@ function authFile(agent: "codex" | "cursor"): string {
  */
 export async function authProblem(agent: AgentName): Promise<string | null> {
   if (agent === "claude") {
+    if (process.env.CLAUDE_CODE_USE_BEDROCK || process.env.CLAUDE_CODE_USE_VERTEX) return "Harbor runs require an Anthropic API key or Claude login; Bedrock/Vertex credentials are not brokered.";
     if (claudeEnvironmentCredential() || await claudeKeychainToken()) return null;
     return "No Claude credential in the environment or the login keychain. Store CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`) in the keychain, or export it or an API key.";
   }
@@ -183,8 +206,8 @@ export async function authProblem(agent: AgentName): Promise<string | null> {
   }
   if (await readable(authFile("cursor"))) return null;
   const secrets = await cursorSecrets();
-  if (secrets.accessToken || secrets.apiKey) return null;
-  return "No Cursor login found. Run `agent login` or set CURSOR_API_KEY.";
+  if (secrets.accessToken) return null;
+  return "Harbor Cursor runs require a Cursor login. Run `agent login`; bare CURSOR_API_KEY exchange is not supported by the broker.";
 }
 
 async function readable(path: string): Promise<boolean> {
@@ -200,15 +223,15 @@ async function readable(path: string): Promise<boolean> {
 async function frozenSubagents(producerDir: string): Promise<SubagentCatalogEntry[]> {
   try {
     return JSON.parse(await readFile(join(producerDir, ".context", "subagent-catalog.json"), "utf8")) as SubagentCatalogEntry[];
-  } catch {
-    return [];
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
   }
 }
 
 /**
  * Claude and Cursor register frozen subagents through a session plugin directory rather
- * than --agents JSON: Seatbelt hides sibling filesystems but not the process
- * table, so anything on argv reads back through `ps` from another arm.
+ * than --agents JSON, so definitions remain files inside the guest.
  * The definitions are the frozen files themselves, so a critic reaches the
  * producer word for word. Returns the plugin path, or null with no subagents.
  */
@@ -224,10 +247,42 @@ export async function writeSubagentPlugin(producerDir: string, runtimeDir: strin
   return plugin;
 }
 
+/** Translate only this capsule's paths. Other macOS paths cannot exist in Linux. */
+export function guestConfiguration<T>(value: T, context: Pick<AdapterContext, "producerDir">): T {
+  const map = (item: unknown): unknown => {
+    if (typeof item === "string") {
+      const mapped = item.replaceAll(context.producerDir, "/workspace");
+      if (/\/(?:Users|Volumes|Applications)\/|\/opt\/homebrew\//.test(mapped)) {
+        throw new UserError(`Host-only path in agent configuration: ${mapped}. Copy this input into the experiment or install the tool with setup inside the Linux guest.`);
+      }
+      return mapped;
+    }
+    if (Array.isArray(item)) return item.map(map);
+    if (item && typeof item === "object") return Object.fromEntries(Object.entries(item).map(([key, child]) => [key, map(child)]));
+    return item;
+  };
+  return map(value) as T;
+}
+
+async function guestBroker(context: AdapterContext, options: Parameters<typeof startBroker>[0]) {
+  const broker = await startBroker({ ...options, ...(context.forwardPort ? { bindHost: "0.0.0.0" } : {}) });
+  try {
+    if (context.forwardPort) {
+      const url = new URL(broker.url);
+      url.port = String(await context.forwardPort(Number(url.port)));
+      broker.url = url.origin;
+    }
+    return broker;
+  } catch (error) {
+    await broker.close();
+    throw error;
+  }
+}
+
 const claudeAdapter: AgentAdapter = {
   name: "claude",
   async prepare(context) {
-    const binary = await resolveBinary(["claude"]);
+    const binary = "claude";
     const subagents = await frozenSubagents(context.producerDir);
     await prepareRuntimeDirectories(context.runtimeDir);
     // The arm's own settings file replaces the empty default whole: a hook set
@@ -235,7 +290,12 @@ const claudeAdapter: AgentAdapter = {
     // `--setting-sources ""` still keeps this machine's own settings out.
     // Model and effort ride in the same file: on argv they would name the arm
     // to any sibling that lists processes.
-    const settings = context.config.settings ? JSON.parse(await readFile(context.config.settings, "utf8")) as Record<string, unknown> : {};
+    const settings = context.config.settings ? guestConfiguration(JSON.parse(await readFile(context.config.settings, "utf8")), context) as Record<string, unknown> : {};
+    const settingsEnvironment = settings.env;
+    if (settingsEnvironment && typeof settingsEnvironment === "object") {
+      const reserved = Object.keys(settingsEnvironment).filter((name) => BROKER_ENVIRONMENT_VARIABLES.has(name) || ISOLATION_VARIABLES.includes(name));
+      if (reserved.length) throw new UserError(`Claude settings.env may not override runtime-owned variables: ${reserved.join(", ")}. Configure provider authentication on the host.`);
+    }
     if (context.config.model) settings.model = context.config.model;
     if (context.config.effort) settings.effortLevel = context.config.effort;
     const settingsPath = join(context.runtimeDir, "claude-settings.json");
@@ -251,11 +311,11 @@ const claudeAdapter: AgentAdapter = {
       "--output-format",
       "stream-json",
       "--verbose",
-      // The runner owns isolation; the CLI's own permission prompts would
-      // otherwise silently deny every file write in headless mode. Restricted
-      // mode refuses this permission mode, so the tool list stands alone.
       "--permission-mode",
-      "bypassPermissions",
+      "auto",
+      // Unattended runs must deny unresolved prompts, not wait for a human.
+      "--permission-prompts",
+      "none",
       "--tools",
       subagents.length > 0 ? "Bash,Read,Write,Edit,Glob,Grep,Task" : "Bash,Read,Write,Edit,Glob,Grep",
       "--settings",
@@ -270,17 +330,18 @@ const claudeAdapter: AgentAdapter = {
       "--no-chrome",
     ];
     if (plugin) args.push("--plugin-dir", plugin);
-    const env = scrubbedEnvironment(context.runtimeDir, "claude");
-    if (!claudeEnvironmentCredential()) {
-      const token = await claudeKeychainToken();
-      if (token) env.CLAUDE_CODE_OAUTH_TOKEN = token;
-    }
+    const env = scrubbedEnvironment(context.runtimeDir);
+    // Claude Code otherwise keeps its scratch in /tmp/claude-<uid>, which may
+    // already exist, another session's, and so be closed to the agent.
+    env.CLAUDE_CODE_TMPDIR = env.TMPDIR;
+    const release = await claudeAccess(env, context.runtimeDir, context);
     return {
       binary,
       args,
       cwd: context.cwd,
       env,
       stdin: context.prompt,
+      ...(release ? { release } : {}),
     };
   },
   parseEvent: parseClaudeEvent,
@@ -371,18 +432,19 @@ const codexAdapter: AgentAdapter = {
   name: "codex",
   async prepare(context) {
     const subagents = await frozenSubagents(context.producerDir);
-    const binary = await resolveBinary(["codex"]);
+    const binary = "codex";
     await prepareRuntimeDirectories(context.runtimeDir);
     const codexHome = join(context.runtimeDir, "codex-home");
     await mkdir(codexHome, { recursive: true, mode: 0o700 });
-    await copyIfPresent(authFile("codex"), join(codexHome, "auth.json"));
+    const env = scrubbedEnvironment(context.runtimeDir);
+    env.CODEX_HOME = codexHome;
+    const access = await codexAccess(env, codexHome, context);
     const args = [
       "exec",
       "-C",
       context.cwd,
-      // The runner owns isolation. Codex must not apply its own sandbox:
-      // macOS refuses nested Seatbelt profiles (exit 71).
-      "--dangerously-bypass-approvals-and-sandbox",
+      // Linux sandboxing and automatic review run inside Harbor's guest boundary.
+      "--approve-for-me",
       "--ignore-user-config",
       "--ignore-rules",
       "--ephemeral",
@@ -394,10 +456,9 @@ const codexAdapter: AgentAdapter = {
     if (context.config.effort) args.push("-c", `model_reasoning_effort=${JSON.stringify(context.config.effort)}`);
     if (subagents.length > 0) args.push("--enable", "multi_agent");
     args.push(...codexMcpArguments(context.config));
+    args.push(...access.args);
     args.push("-");
-    const env = scrubbedEnvironment(context.runtimeDir, "codex");
-    env.CODEX_HOME = codexHome;
-    return { binary, args, cwd: context.cwd, env, stdin: context.prompt };
+    return { binary, args, cwd: context.cwd, env, stdin: context.prompt, release: access.release };
   },
   parseEvent: parseCodexEvent,
   // Codex counts cached tokens inside input_tokens and reasoning tokens inside
@@ -413,44 +474,123 @@ const codexAdapter: AgentAdapter = {
     : null,
 };
 
+interface CodexLogin {
+  OPENAI_API_KEY?: string | null;
+  tokens?: { id_token?: string; access_token?: string; account_id?: string };
+}
+
+async function readCodexLogin(): Promise<CodexLogin | null> {
+  try {
+    return JSON.parse(await readFile(authFile("codex"), "utf8")) as CodexLogin;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Codex's credential stays in this process. An API key is swapped at a broker
+ * that OPENAI_BASE_URL points at. A ChatGPT login is swapped at a broker that
+ * chatgpt_base_url points at, and the agent's own auth.json holds only
+ * unsigned stand-in tokens with the claims Codex reads (plan, account,
+ * expiry) and no refresh token, so the real login is never copied and never
+ * refreshed from inside a run.
+ */
+async function codexAccess(env: NodeJS.ProcessEnv, codexHome: string, context: AdapterContext): Promise<{ args: string[]; release: () => Promise<void> }> {
+  const login = await readCodexLogin();
+  const apiKey = process.env.OPENAI_API_KEY ?? login?.OPENAI_API_KEY ?? undefined;
+  // Codex refuses a backend that is not HTTPS, so its broker serves HTTPS
+  // under an authority Codex alone is told to trust, next to the public roots
+  // its other requests need.
+  const trustBroker = async (authority: string | undefined) => {
+    const bundle = join(codexHome, "broker-ca.pem");
+    await writeFile(bundle, [authority ?? "", ...rootCertificates].join("\n"), { mode: 0o600 });
+    env.CODEX_CA_CERTIFICATE = bundle;
+  };
+  if (apiKey) {
+    const broker = await guestBroker(context, { upstream: "https://api.openai.com", allow: ["/v1/responses", "/v1/models"], secret: async () => apiKey, logFile: brokerLog(context.runtimeDir), tls: true });
+    await trustBroker(broker.certificateAuthority);
+    env.OPENAI_API_KEY = broker.standIn;
+    env.OPENAI_BASE_URL = `${broker.url}/v1`;
+    return { args: [], release: broker.close };
+  }
+  const tokens = login?.tokens;
+  if (!tokens?.access_token || !tokens.id_token) throw new UserError("No ~/.codex/auth.json and OPENAI_API_KEY is not set. Run `codex login`.");
+  requireLasting(tokens.access_token, context.config.timeoutMs, "Run any codex command so it refreshes its login, then start again.");
+  const broker = await guestBroker(context, {
+    upstream: "https://chatgpt.com",
+    // The Responses stream, and the account routing Codex checks before it.
+    allow: ["/backend-api/codex/", "/backend-api/wham/"],
+    secret: async () => {
+      const current = (await readCodexLogin())?.tokens?.access_token;
+      if (!current) throw new Error("~/.codex/auth.json no longer holds a login");
+      return current;
+    },
+    logFile: brokerLog(context.runtimeDir),
+    tls: true,
+  });
+  await trustBroker(broker.certificateAuthority);
+  // Far enough ahead that Codex never tries to refresh the stand-in.
+  const exp = Math.floor(Date.now() / 1000) + 30 * 86_400;
+  const claims = (token: string, keep: string[]) => Object.fromEntries(Object.entries(tokenClaims(token) ?? {}).filter(([name]) => keep.includes(name)));
+  const identity = ["https://api.openai.com/auth", "https://api.openai.com/profile", "email", "sub", "aud", "iss", "client_id", "scp"];
+  await writeFile(join(codexHome, "auth.json"), `${JSON.stringify({
+    auth_mode: "chatgpt",
+    OPENAI_API_KEY: null,
+    tokens: {
+      id_token: standInToken({ ...claims(tokens.id_token, identity), exp }, "unsigned"),
+      access_token: standInToken({ ...claims(tokens.access_token, identity), exp }, broker.standIn),
+      refresh_token: "held-by-crucible",
+      ...(tokens.account_id ? { account_id: tokens.account_id } : {}),
+    },
+    last_refresh: new Date().toISOString(),
+  })}\n`, { mode: 0o600 });
+  return { args: ["-c", `chatgpt_base_url=${JSON.stringify(`${broker.url}/backend-api/`)}`], release: broker.close };
+}
+
 const cursorAdapter: AgentAdapter = {
   name: "cursor",
   async prepare(context) {
     const subagents = await frozenSubagents(context.producerDir);
-    const binary = await resolveBinary(binaryNames("cursor"));
+    const binary = "cursor-agent";
     await prepareRuntimeDirectories(context.runtimeDir);
     const cursorHome = join(context.runtimeDir, "home", ".cursor");
     await mkdir(cursorHome, { recursive: true, mode: 0o700 });
-    await copyIfPresent(join(homedir(), ".cursor", "agent-cli-state.json"), join(cursorHome, "agent-cli-state.json"));
     await writeFile(join(cursorHome, "cli-config.json"), "{}\n", { mode: 0o600 });
-    await installCursorAuth(cursorHome);
-    const args = [
-      "-p",
-      "--force",
-      // The runner owns isolation. Cursor's own sandbox maps the workspace
-      // under /tmp/.cursor, which the write containment denies.
-      "--sandbox",
-      "disabled",
-      "--workspace",
-      context.cwd,
-      "--output-format",
-      "stream-json",
-    ];
-    // Cursor plugin agents inherit the parent model and ignore Claude-specific
-    // model aliases and tool lists in the frozen frontmatter.
-    const plugin = await writeSubagentPlugin(context.producerDir, context.runtimeDir, subagents, "cursor");
-    if (plugin) args.push("--plugin-dir", plugin);
-    const model = context.config.model;
-    if (context.config.effort && !model) throw new UserError("Cursor effort requires an explicit model");
-    if (model) args.push("--model", await resolveCursorModel(binary, model, context.config.effort));
-    const scratch = await cursorScratchDir(context.producerDir);
-    const env = scrubbedEnvironment(context.runtimeDir, "cursor");
-    env.CURSOR_DATA_DIR = scratch;
-    env.CURSOR_CONFIG_DIR = scratch;
-    // Read credentials from $HOME/.cursor/auth.json rather than the login
-    // keychain, so the scrubbed home fully owns what the producer can see.
-    env.AGENT_CLI_CREDENTIAL_STORE = "file";
-    return { binary, args, cwd: context.cwd, env, stdin: context.prompt, extraWriteRoots: [scratch] };
+    const env = scrubbedEnvironment(context.runtimeDir);
+    const access = await cursorAccess(env, cursorHome, context);
+    try {
+      const args = [
+        "-p",
+        "--auto-review",
+        // Trust the fresh project inside the disposable guest.
+        "--trust",
+        // Harbor owns isolation.
+        "--sandbox",
+        "disabled",
+        "--workspace",
+        context.cwd,
+        "--output-format",
+        "stream-json",
+      ];
+      // Cursor plugin agents inherit the parent model and ignore Claude-specific
+      // model aliases and tool lists in the frozen frontmatter.
+      const plugin = await writeSubagentPlugin(context.producerDir, context.runtimeDir, subagents, "cursor");
+      if (plugin) args.push("--plugin-dir", plugin);
+      const scratch = join(context.runtimeDir, "cursor");
+      await mkdir(scratch, { recursive: true, mode: 0o700 });
+      env.CURSOR_DATA_DIR = scratch;
+      env.CURSOR_CONFIG_DIR = scratch;
+      // Read credentials from $HOME/.cursor/auth.json rather than the login
+      // keychain, so the scrubbed home fully owns what the producer can see.
+      env.AGENT_CLI_CREDENTIAL_STORE = "file";
+      const model = context.config.model;
+      if (context.config.effort && !model) throw new UserError("Cursor effort requires an explicit model");
+      if (model) args.push("--model", await resolveCursorModel(model, context.config.effort, context, env));
+      return { binary, args, cwd: context.cwd, env, stdin: context.prompt, ...(access ? { release: access } : {}) };
+    } catch (error) {
+      await access?.();
+      throw error;
+    }
   },
   parseEvent: parseStructuredEvent,
   collectUsage: latestUsage,
@@ -539,53 +679,70 @@ export async function prepareRuntimeDirectories(runtimeDir: string): Promise<voi
   }
 }
 
-async function copyIfPresent(source: string, destination: string): Promise<void> {
-  try {
-    await copyFile(source, destination);
-    await chmod(destination, 0o600);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-  }
-}
-
-async function resolveCursorModel(binary: string, model: string, effort: string | undefined): Promise<string> {
+async function resolveCursorModel(model: string, effort: string | undefined, context: AdapterContext, env: NodeJS.ProcessEnv): Promise<string> {
   if (!effort) return model;
   if (model.includes("[")) throw new UserError("Set Cursor effort either in producer.effort or in the model override, not both");
-  const listed = await listCursorModelIds(binary);
-  const hyphen = `${model}-${effort}`;
-  if (listed.has(hyphen)) return hyphen;
-  if (listed.has(model)) return model;
-  throw new UserError(`Cannot use Cursor model ${hyphen}. Run cursor-agent --list-models and set producer.model to a listed id.`);
+  if (!context.listCursorModels) throw new UserError("Cursor effort requires model discovery inside the Harbor guest");
+  const stdout = await context.listCursorModels(env);
+  const listed = new Set(stdout.split(/\r?\n/).flatMap((line) => /^([a-z0-9][a-z0-9.+\-_]*)\s+-/i.exec(line)?.[1] ?? []));
+  const requested = model.endsWith(`-${effort}`) ? model : `${model}-${effort}`;
+  if (listed.has(requested)) return requested;
+  throw new UserError(`Cannot use Cursor model ${requested}. Guest discovery returned ${listed.size} model identifiers; the requested model and effort must appear together. Inspect model-discovery.json in the agent logs and set producer.model to an id reported by the guest's agent --list-models.`);
 }
 
-async function listCursorModelIds(binary: string): Promise<Set<string>> {
-  const { stdout } = await execFileAsync(binary, ["--list-models"], { timeout: 15_000 });
-  const ids = new Set<string>();
-  for (const line of stdout.split(/\r?\n/)) {
-    const match = /^([a-z0-9][a-z0-9.+\-_]*)\s+-/i.exec(line);
-    if (match?.[1]) ids.add(match[1]);
-  }
-  return ids;
-}
-
-async function installCursorAuth(cursorHome: string): Promise<void> {
-  const destination = join(cursorHome, "auth.json");
+/** The access token of this machine's Cursor login: its auth.json, else the login keychain. */
+async function cursorAccessToken(): Promise<string | undefined> {
   try {
-    await copyFile(authFile("cursor"), destination);
-    await chmod(destination, 0o600);
-    return;
+    const login = JSON.parse(await readFile(authFile("cursor"), "utf8")) as { accessToken?: string };
+    if (login.accessToken) return login.accessToken;
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT" && !(error instanceof SyntaxError)) throw error;
   }
-  const { accessToken, refreshToken, apiKey } = await cursorSecrets();
-  if (!accessToken && !apiKey) {
-    throw new UserError("Cursor login not found. Run `agent login` or set CURSOR_API_KEY.");
+  return (await cursorSecrets()).accessToken;
+}
+
+/** Cursor's API services, which carry the login; anything else through the broker is refused. */
+const CURSOR_PATHS = ["/aiserver.v1.", "/agent.v1."];
+
+/**
+ * Where Cursor's agent service lives. The server names it in its config, and
+ * the CLI dials it directly unless its endpoint is a localhost address, which
+ * is why the broker is given to Cursor as localhost.
+ */
+const CURSOR_AGENT_HOST = "https://agentn.global.api5.cursor.sh";
+
+/**
+ * A Cursor login stays in this process: the agent's auth.json holds an
+ * unsigned stand-in token and no refresh token, and CURSOR_API_ENDPOINT points
+ * at a broker that swaps it for the current real one. A bare CURSOR_API_KEY,
+ * with no login is refused: its exchange is not implemented by the broker.
+ */
+async function cursorAccess(env: NodeJS.ProcessEnv, cursorHome: string, context: AdapterContext): Promise<(() => Promise<void>) | undefined> {
+  const token = await cursorAccessToken();
+  if (!token) {
+    throw new UserError("Harbor Cursor runs require a Cursor login (run `agent login`). Bare CURSOR_API_KEY exchange is not supported by the credential broker.");
   }
-  await writeFile(destination, `${JSON.stringify({
-    ...(accessToken ? { accessToken } : {}),
-    ...(refreshToken ? { refreshToken } : {}),
-    ...(apiKey ? { apiKey } : {}),
-  })}\n`, { mode: 0o600 });
+  requireLasting(token, context.config.timeoutMs, "Run any cursor-agent command so it refreshes its login, then start again.");
+  const broker = await guestBroker(context, {
+    upstream: process.env.CURSOR_API_ENDPOINT ?? "https://api2.cursor.sh",
+    routes: [{ prefix: "/agent.v1.", upstream: CURSOR_AGENT_HOST }],
+    allow: CURSOR_PATHS,
+    secret: async () => {
+      const current = await cursorAccessToken();
+      if (!current) throw new Error("the Cursor login is gone");
+      return current;
+    },
+    logFile: brokerLog(context.runtimeDir),
+  });
+  const exp = Math.floor(Date.now() / 1000) + 30 * 86_400;
+  const claims = Object.fromEntries(Object.entries(tokenClaims(token) ?? {}).filter(([name]) => ["sub", "aud", "iss", "scope", "type"].includes(name)));
+  const standIn = standInToken({ ...claims, exp }, broker.standIn);
+  await writeFile(join(cursorHome, "auth.json"), `${JSON.stringify({ accessToken: standIn, refreshToken: "held-by-crucible" })}\n`, { mode: 0o600 });
+  // Linux CLI builds can use a different file credential location. The native
+  // token variable carries only the same broker capability, never the login.
+  env.CURSOR_AUTH_TOKEN = standIn;
+  env.CURSOR_API_ENDPOINT = broker.url.replace("127.0.0.1", "localhost");
+  return broker.close;
 }
 
 async function cursorSecrets(): Promise<{ accessToken: string | undefined; refreshToken: string | undefined; apiKey: string | undefined }> {
@@ -609,14 +766,7 @@ async function keychainSecret(service: string, account?: string): Promise<string
   }
 }
 
-async function cursorScratchDir(producerDir: string): Promise<string> {
-  // Cursor maps project state under ~/.cursor/projects, then falls back to
-  // /tmp/.cursor when that path is longer than 84 characters. Capsule homes
-  // always exceed that, so give each producer a short private directory.
-  const path = join("/tmp", `crucible-${basename(producerDir)}`);
-  await mkdir(path, { recursive: true, mode: 0o700 });
-  return realpath(path);
-}
+
 
 function parseCodexEvent(line: string, producerId: string): NormalizedEvent[] {
   let value: Record<string, unknown>;

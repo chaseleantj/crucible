@@ -84,6 +84,7 @@ function liveStatus(producer: ProducerStatus, timeoutMs: number): string {
   if (producer.state === "complete" && producer.timedOut) return "complete (timed out)";
   if (producer.state !== "running") return producer.state;
   const health = agentHealth(producer, timeoutMs);
+  if (health === "preparing") return "waiting / preparing";
   return health === "working" ? "running" : health === "process missing" ? "stalled (process missing)" : health;
 }
 

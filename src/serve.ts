@@ -5,6 +5,7 @@ import { extname, join, normalize, resolve, sep } from "node:path";
 import { UserError } from "./errors.js";
 import { listFiles } from "./files.js";
 import { isWithin } from "./scan-files.js";
+import { ARTIFACT_VIEW_FLAG, artifactPage } from "./artifact-view.js";
 
 /**
  * The runner serves each output itself, on a port the kernel picks, and checks
@@ -37,6 +38,7 @@ const CONTENT_TYPES: Record<string, string> = {
   ".json": "application/json; charset=utf-8",
   ".map": "application/json; charset=utf-8",
   ".md": "text/plain; charset=utf-8",
+  ".markdown": "text/plain; charset=utf-8",
   ".txt": "text/plain; charset=utf-8",
   ".svg": "image/svg+xml",
   ".png": "image/png",
@@ -101,7 +103,8 @@ async function handle(root: string, request: IncomingMessage, response: ServerRe
     response.writeHead(405).end();
     return;
   }
-  const file = resolveInside(root, new URL(request.url ?? "/", "http://localhost").pathname);
+  const url = new URL(request.url ?? "/", "http://localhost");
+  const file = resolveInside(root, url.pathname);
   if (!file) {
     response.writeHead(404).end();
     return;
@@ -114,6 +117,12 @@ async function handle(root: string, request: IncomingMessage, response: ServerRe
   }
   if (!info?.isFile()) {
     response.writeHead(404).end();
+    return;
+  }
+  const presentation = url.searchParams.has(ARTIFACT_VIEW_FLAG) ? await artifactPage(target) : null;
+  if (presentation !== null) {
+    response.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Content-Length": Buffer.byteLength(presentation), "Cache-Control": "no-store" });
+    response.end(request.method === "HEAD" ? undefined : presentation);
     return;
   }
   response.writeHead(200, {

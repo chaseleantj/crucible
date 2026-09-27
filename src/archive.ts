@@ -13,6 +13,7 @@ import { readRunState } from "./state.js";
 import type { ResolvedRun, RunResult } from "./types.js";
 import { archiveReportAssets } from "./report-assets.js";
 import { slug } from "./slug.js";
+import { isViewableArtifact } from "./artifact-view.js";
 
 /** Publish a small reading copy. Reproducibility records remain in runDir. */
 export async function archiveRun(run: ResolvedRun, destinationRoot = pathsConfig().archiveRoot, buildDirectory?: string): Promise<string> {
@@ -48,14 +49,11 @@ export async function archiveRun(run: ResolvedRun, destinationRoot = pathsConfig
         try {
           await copyTree(workspace, scratch);
           await withholdNonArmFiles(run.runDir, producerId, scratch);
-          const captured = result.shots?.arms[label]?.map((shot) => shot.artifact ?? shot.page);
-          const pages = captured?.length ? captured : (await changedPaths(run, producerId))
-              .filter((path) => /\.(html?|md|py|ts|tsx|jsx|js|mjs|sh|go|rs|c|cpp|h|java|rb|sql)$/i.test(path));
+          const pages = finalArtifacts(result, label, await changedPaths(run, producerId));
           await copyArtifacts(scratch, join(stage, "outputs", label), pages);
         } finally { await removeTree(scratch); }
       } else if (previous && await isDirectory(previous)) {
-        const pages = result.shots?.arms[label]?.map((shot) => shot.artifact ?? shot.page)
-          ?? (await listFiles(previous)).filter((path) => /\.(html?|md|py|ts|tsx|jsx|js|mjs|sh|go|rs|c|cpp|h|java|rb|sql)$/i.test(path));
+        const pages = finalArtifacts(result, label, await listFiles(previous));
         await copyArtifacts(previous, join(stage, "outputs", label), pages);
       } else if (!existing) {
         throw new UserError(`Producer workspace is missing: ${workspace}`);
@@ -106,6 +104,14 @@ export async function archiveRun(run: ResolvedRun, destinationRoot = pathsConfig
   } finally { await removeTree(stage); }
 }
 
+/** A capture limit must not discard an unjudged arm's other deliverables. */
+function finalArtifacts(result: RunResult, label: string, files: string[]): string[] {
+  const captured = result.shots?.arms[label]?.map((shot) => shot.artifact ?? shot.page) ?? [];
+  if (isJudged(result) && captured.length > 0) return captured;
+  const outputs = files.filter((path) => isViewableArtifact(path) || /\.(py|ts|tsx|jsx|js|mjs|sh|go|rs|c|cpp|h|java|rb|sql)$/i.test(path));
+  return [...new Set([...captured, ...outputs])];
+}
+
 /** Only explicit local references travel with the final pages; no source-tree copy. */
 async function copyArtifacts(source: string, destination: string, pages: string[]): Promise<void> {
   const copied = new Set<string>();
@@ -120,7 +126,7 @@ async function copyArtifacts(source: string, destination: string, pages: string[
     copied.add(key);
     await mkdir(dirname(join(destination, key)), { recursive: true });
     await copyFile(absolute, join(destination, key));
-    if (![".html", ".htm", ".md", ".css", ".js", ".mjs", ".svg"].includes(extname(key).toLowerCase())) return;
+    if (![".html", ".htm", ".md", ".markdown", ".css", ".js", ".mjs", ".svg"].includes(extname(key).toLowerCase())) return;
     const text = await readFile(absolute, "utf8");
     if (finalPage && /\.html?$/i.test(key) && (/(?:src|poster)\s*=\s*["']\/(?!\/)|<link\b[^>]*href\s*=\s*["']\/(?!\/)|<script\b[^>]*src\s*=\s*["'][^"']*\.(?:ts|tsx|jsx)(?:[?"'])/i.test(text))) {
       throw new UserError(`Final page ${key} needs a build or root-relative runtime assets. Build with relative asset URLs, then archive with --build-dir <directory>; the raw run remains available.`);

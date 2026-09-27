@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import test from "node:test";
 import { copyTree } from "../src/files.js";
 import { DeleteError, copiedRunIssues, deleteEach, deleteEntries, entryIssues, readArchive, resultIssues, scanExperiments, storeRoots } from "../src/store.js";
+import { renderStatus, statusJson } from "../src/status.js";
+import type { ResolvedRun } from "../src/types.js";
 
 const PNG = Buffer.from("89504e470d0a1a0a", "hex");
 
@@ -156,7 +158,7 @@ test("readArchive lists every HTML page an arm produced, the captured one first"
   await writeFile(join(base, "outside.html"), "<p>");
   const read = readArchive(dir);
   assert.equal(read.outputs.a, join(dir, "outputs", "a", "talk.html"), "a captured artifact names the output, fragment and all");
-  assert.deepEqual(read.pages, { a: ["talk.html", "docs/guide.htm", "index.html"], b: [] });
+  assert.deepEqual(read.pages, { a: ["talk.html", "docs/guide.htm", "index.html", "notes.md"], b: ["answer.md"] });
 });
 
 test("readArchive opens an SVG arm as its output and a live page", async (t) => {
@@ -171,7 +173,7 @@ test("readArchive opens an SVG arm as its output and a live page", async (t) => 
   const read = readArchive(dir);
   assert.equal(read.outputs.a, join(dir, "outputs", "a", "cup.svg"), "a captured SVG is the output");
   assert.equal(read.outputs.b, join(dir, "outputs", "b", "icon.svg"), "an uncaptured SVG still beats nothing");
-  assert.deepEqual(read.pages, { a: ["cup.svg"], b: ["icon.svg"] });
+  assert.deepEqual(read.pages, { a: ["cup.svg", "notes.md"], b: ["icon.svg"] });
 });
 
 test("resultIssues accepts a one-arm run without a reference guess", () => {
@@ -327,6 +329,39 @@ test("a run is in flight only while an agent is really at work, and deletable ot
   assert.throws(() => deleteEntries(roots, [join(runsRoot, "ab-judging")]), (error: unknown) => error instanceof DeleteError && error.reason === "active");
 });
 
+test("queued workers stay protected while the CLI and dashboard show the agent has not started", async (t) => {
+  const base = await mkdtemp(join(tmpdir(), "crucible-queued-"));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const roots = { archiveRoot: join(base, "archive"), runsRoot: join(base, "runs") };
+  const oldActivity = new Date(Date.now() - 20 * 60_000).toISOString();
+  const dir = await runRecord(roots.runsRoot, "ab-queued", "running", {
+    state: "running", pid: process.pid, toolCalls: 0, lastActivityAt: oldActivity,
+  });
+  const run = scanExperiments(roots).live.inFlight[0]!;
+  assert.equal(run.deletable, false);
+  assert.deepEqual({ health: run.producers[0]!.health, elapsed: run.producers[0]!.elapsedMs, remaining: run.producers[0]!.remainingMs },
+    { health: "preparing", elapsed: null, remaining: null });
+  assert.throws(() => deleteEntries(roots, [dir]), (error: unknown) => error instanceof DeleteError && error.reason === "active");
+
+  const resolved = { runDir: dir, runId: "ab-queued", config: { producer: { timeoutMs: 60_000 }, judge: null } } as ResolvedRun;
+  const progress = JSON.parse(await statusJson(resolved)).producers.p1;
+  assert.equal(progress.state, "waiting / preparing");
+  assert.equal(progress.elapsedSeconds, null);
+  assert.match(await renderStatus(resolved), /waiting \/ preparing/);
+
+  const now = new Date().toISOString();
+  await runRecord(roots.runsRoot, "ab-queued", "running", {
+    state: "running", pid: process.pid, toolCalls: 0, startedAt: now, lastActivityAt: now,
+  });
+  assert.equal(scanExperiments(roots).live.inFlight[0]!.producers[0]!.health, "working");
+  assert.equal(JSON.parse(await statusJson(resolved)).producers.p1.state, "running");
+
+  const dead = spawnSync("/usr/bin/true").pid;
+  await runRecord(roots.runsRoot, "ab-queued", "running", { state: "running", pid: dead, toolCalls: 0 });
+  assert.equal(scanExperiments(roots).live.unfinished[0]!.phase, "interrupted");
+  assert.equal(JSON.parse(await statusJson(resolved)).producers.p1.state, "stalled (process missing)");
+});
+
 test("each question has a key of its own: its series or run ID, told apart only on collision", async (t) => {
   const { base, archiveRoot, runsRoot } = await fixture();
   t.after(() => rm(base, { recursive: true, force: true }));
@@ -335,6 +370,40 @@ test("each question has a key of its own: its series or run ID, told apart only 
   await archive(archiveRoot, "copy", { ...judged("ab-00000004", null, "a", { a: 1 }, "2026-04-01T00:00:00Z"), judged: false });
   await archive(archiveRoot, "named-like-a-series", judged("pages", null, "a", { a: 2, b: 1 }, "2026-06-01T00:00:00Z"));
   assert.deepEqual(keys(), ["ab-00000004@copy", "ab-00000004@unjudged", "pages", "pages@named-like-a-series"]);
+});
+
+test("a run whose experiment set judge: none is listed and can be deleted", async (t) => {
+  const { base, archiveRoot, runsRoot } = await fixture();
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const dir = await runRecord(runsRoot, "ab-0000000f", "failed", { state: "failed", toolCalls: 0 });
+  await writeFile(join(dir, "resolved-config.json"), JSON.stringify({ name: "Unjudged", arms: [{ label: "a" }], producer: { timeoutMs: 60_000 }, judge: null }));
+  const { live } = scanExperiments({ archiveRoot, runsRoot });
+  const run = live.unfinished.find((item) => item.runId === "ab-0000000f");
+  assert.ok(run, "an unjudged run is not hidden");
+  assert.equal(run.judge, null);
+  assert.deepEqual(deleteEntries({ archiveRoot, runsRoot }, [dir]), [dir]);
+});
+
+test("deleting a run record removes its temporary workspace too, and nothing a damaged record names", async (t) => {
+  const { base, archiveRoot, runsRoot } = await fixture();
+  t.after(async () => {
+    await chmod(join(base, "temp", "ab-00000007", "p1", ".context"), 0o700).catch(() => {});
+    await rm(base, { recursive: true, force: true });
+  });
+  const workspace = join(base, "temp", "ab-00000007");
+  await mkdir(join(workspace, "p1", ".context"), { recursive: true });
+  await writeFile(join(workspace, "p1", ".context", "rubric.md"), "frozen\n");
+  await chmod(join(workspace, "p1", ".context"), 0o500);
+  await writeFile(join(runsRoot, "ab-00000007", "run.json"), JSON.stringify({ tempDir: workspace }));
+  const outside = join(base, "keep");
+  await mkdir(outside);
+  await writeFile(join(runsRoot, "ab-00000008", "run.json"), JSON.stringify({ tempDir: outside }));
+  const roots = { archiveRoot, runsRoot };
+  assert.deepEqual(deleteEach(roots, [[join(runsRoot, "ab-00000007")]], { dryRun: true }), [{ deleted: [join(runsRoot, "ab-00000007"), workspace] }], "a dry run names the workspace");
+  assert.deepEqual(deleteEntries(roots, [join(runsRoot, "ab-00000007")]), [workspace, join(runsRoot, "ab-00000007")]);
+  await assert.rejects(stat(workspace), /ENOENT/, "read-only frozen folders go too");
+  assert.deepEqual(deleteEntries(roots, [join(runsRoot, "ab-00000008")]), [join(runsRoot, "ab-00000008")]);
+  assert.ok((await stat(outside)).isDirectory(), "a workspace not named after its run is left alone");
 });
 
 test("deleteEntries resolves its roots once, so a relative runs root still finds its records", async (t) => {

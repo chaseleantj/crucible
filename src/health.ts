@@ -10,7 +10,7 @@ const QUIET_MS = 5 * 60_000;
 const STALLED_MS = 15 * 60_000;
 const NEAR_TIMEOUT_FRACTION = 0.8;
 
-export type AgentHealth = "working" | "quiet" | "stalled" | "near timeout" | "process missing";
+export type AgentHealth = "preparing" | "working" | "quiet" | "stalled" | "near timeout" | "process missing";
 
 /**
  * The record says this agent is at work: running, or waiting to start in a
@@ -38,6 +38,9 @@ export function runActive(view: RunView): boolean {
 /** How a running agent is doing: whether it is still worth waiting for. */
 export function agentHealth(agent: ProducerStatus, timeoutMs: number): AgentHealth {
   if (!agent.pid || !processExists(agent.pid)) return "process missing";
+  // A worker is registered before it queues, boots, and sets up the guest.
+  // The agent's own clock starts only when its CLI is launched.
+  if (!agent.startedAt) return "preparing";
   const silentFor = agent.lastActivityAt ? Date.now() - Date.parse(agent.lastActivityAt) : 0;
   if (silentFor >= STALLED_MS) return "stalled";
   if (silentFor >= QUIET_MS) return "quiet";

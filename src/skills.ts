@@ -137,7 +137,7 @@ export function skillLoader(catalog: SkillCatalogEntry[], contextDir: string, sh
     // snapshot; a clean arm has none, and pointing at an empty folder invites
     // the producer to go looking for the real one.
     ...sharedFolders.map((folder) => `If a frozen skill refers to ${displayPath(folder)}, use ${join(contextDir, "shared", basename(folder))} instead.`),
-    `Declared candidate support files, when present, are frozen under ${join(contextDir, "dependencies")} by their folder name.`,
+    `Support files, when present, are frozen under ${join(contextDir, "dependencies")} by their folder name.`,
     "",
     ...lines,
   ].join("\n");

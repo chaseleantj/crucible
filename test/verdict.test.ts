@@ -1,6 +1,25 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { parseVerdict, revealVerdict, weightedTotal } from "../src/verdict.js";
+import { judgeLetters, parseVerdict, revealVerdict, weightedTotal } from "../src/verdict.js";
+
+test("ten anonymous outputs can be scored and revealed, including a winner at J", () => {
+  const letters = judgeLetters(10);
+  assert.deepEqual(letters, ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"]);
+  assert.throws(() => judgeLetters(11), /1 to 10 arms/);
+  const labels = letters.map((letter) => `variant-${letter.toLowerCase()}`);
+  const verdict = parseVerdict({
+    winner: "J", confidence: 0.8,
+    scores: [{ criterion: "quality", weight: 1, scores: Object.fromEntries(letters.map((letter, index) => [letter, index + 1])) }],
+    referenceGuess: { output: "A", confidence: 0.2 },
+    summary: "Output J is clearest. I's conclusion is shorter.",
+  }, letters);
+  const revealed = revealVerdict(verdict, Object.fromEntries(letters.map((letter, index) => [letter, labels[index]!])), labels);
+  assert.equal(revealed.winner, "variant-j");
+  assert.equal(revealed.margin, 1);
+  assert.equal(revealed.summary, "variant-j is clearest. variant-i's conclusion is shorter.");
+  assert.deepEqual(Object.keys(revealed.totals), labels);
+  assert.equal(revealed.totals["variant-j"], 10);
+});
 
 test("candle totals round decimal halves consistently with their weighted scores", () => {
   const verdict = parseVerdict({

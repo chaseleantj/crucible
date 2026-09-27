@@ -7,19 +7,21 @@
 //
 // Everything here is synchronous: a dashboard reads a snapshot per request and
 // nothing else waits on it.
-import { lstatSync, rmSync, statSync } from "node:fs";
+import { chmodSync, lstatSync, readdirSync, rmSync, statSync } from "node:fs";
 import { basename, join, relative, resolve, sep } from "node:path";
 import { entryIssues, previewIssues, resultIssues } from "./check.js";
 import { UserError } from "./errors.js";
 import { agentActive, agentHealth, elapsedMs, runActive, type AgentHealth } from "./health.js";
-import { pathsConfig } from "./paths.js";
+import { agentScratch, pathsConfig } from "./paths.js";
 import { experimentVisualPreviews } from "./previews.js";
 import { containedFile, firstParagraph, isDirectory, isFile, isWithin, listDirectFiles, listDirs, listFilesDeep, readJsonSync, readText } from "./scan-files.js";
 import type { ExperimentConfig, ProducerState, ProducerStatus, RunResult, RunState, RunView } from "./types.js";
 import { isJudged } from "./verdict.js";
+import { isMarkdown, isViewableArtifact } from "./artifact-view.js";
 
 export { README_WORD_LIMIT, copiedRunIssues, entryIssues, previewIssues, resultIssues } from "./check.js";
 export { experimentVisualPreviews, visualPreview, type VisualPreview } from "./previews.js";
+export { dashboardKey, dashboardLoginUrl } from "./ui-key.js";
 export { isJudged } from "./verdict.js";
 
 export interface StoreRoots {
@@ -200,13 +202,10 @@ export function readArchive(dir: string, name = basename(dir)): ArchivedExperime
     issues,
     preview,
     outputs,
-    pages: Object.fromEntries(Object.entries(outputs).map(([label, output]) => [label, htmlPages(join(dir, "outputs", label), output)])),
+    pages: Object.fromEntries(Object.entries(outputs).map(([label, output]) => [label, artifactPages(join(dir, "outputs", label), output)])),
     cover: Object.values(preview).find(Boolean) ?? null,
   };
 }
-
-/** A file the live viewer can open on its own: a page, or an SVG image. */
-const isPage = (file: string) => /\.(html?|svg)$/i.test(file);
 
 /**
  * Outputs are stored under their revealed arm label. Captured artifacts name
@@ -226,20 +225,20 @@ function archivedOutputs(dir: string, result: RunResult | null): Record<string, 
       : [];
     const html = files.filter((file) => /\.html?$/i.test(file));
     const svg = files.filter((file) => /\.svg$/i.test(file));
-    const markdown = files.filter((file) => /\.md$/i.test(file));
+    const markdown = files.filter(isMarkdown);
     // Drafts and notes often accompany the deliverable; prefer them only when
     // the archive has no other document.
     const aside = (file: string) => Number(/^(draft|notes|readme)\.md$/i.test(file));
     markdown.sort((a, b) => aside(a) - aside(b));
-    const candidates = [...captured.filter(isPage), ...html.filter((file) => /^index\.html?$/i.test(file)), ...html, ...svg, ...markdown];
+    const candidates = [...captured.filter(isViewableArtifact), ...html.filter((file) => /^index\.html?$/i.test(file)), ...html, ...svg, ...markdown];
     const output = candidates.map((file) => containedFile(dir, relative(dir, join(folder, file)))).find(Boolean) ?? null;
     return [label, output];
   }));
 }
 
 /** The pages in one arm's output folder that really are in it, its chosen output first. */
-function htmlPages(folder: string, output: string | null): string[] {
-  const pages = listFilesDeep(folder).filter((file) => isPage(file) && containedFile(folder, file));
+function artifactPages(folder: string, output: string | null): string[] {
+  const pages = listFilesDeep(folder).filter((file) => isViewableArtifact(file) && containedFile(folder, file));
   const first = output ? relative(folder, output) : null;
   return first && pages.includes(first) ? [first, ...pages.filter((page) => page !== first)] : pages;
 }
@@ -351,7 +350,8 @@ function readRun(dir: string, runId: string): LiveRun | null {
       typeof state.state !== "string" || typeof state.updatedAt !== "string" ||
       !state.producers || typeof state.producers !== "object" ||
       !Object.values(state.producers).every((agent) => agent && typeof agent.state === "string") ||
-      !config.producer || !config.judge) return null;
+      // A run whose experiment set `judge: none` has no judge block, and is still a run.
+      !config.producer || config.judge === undefined) return null;
   const active = runActive(state);
   const judging = state.judge !== undefined && agentActive(state.judge, state.state);
   return {
@@ -371,7 +371,7 @@ function readRun(dir: string, runId: string): LiveRun | null {
     producers: Object.values(state.producers).map((producer) => describeAgent(producer, config.producer.timeoutMs)),
     // The runner tracks the judge the same way once judging starts; older
     // records have no row.
-    judge: state.judge ? describeAgent(state.judge, config.judge.timeoutMs) : null,
+    judge: state.judge && config.judge ? describeAgent(state.judge, config.judge.timeoutMs) : null,
   };
 }
 
@@ -391,7 +391,7 @@ function describeAgent(agent: ProducerStatus, budgetMs: number): AgentProgress {
     timedOut: agent.timedOut ?? false,
     error: agent.error ?? null,
     health: health === "process missing" ? "stalled" : health,
-    remainingMs: running ? Math.max(0, budgetMs - (elapsed ?? 0)) : null,
+    remainingMs: running && elapsed !== null ? Math.max(0, budgetMs - elapsed) : null,
   };
 }
 
@@ -485,9 +485,16 @@ function deleteSelection({ roots, archives, records, allowed, gone }: DeletableS
       if (isLink(current)) throw new DeleteError("link", `Refusing to delete through a symbolic link: ${target}`);
     }
   }
-  if (dryRun) return targets;
+  // A run record's temporary workspace goes with it: it holds the arms' work
+  // and the frozen inputs, and nothing else would ever remove it.
+  const workspaces = targets.flatMap((target) => isWithin(roots[1]!, target) ? runWorkspace(target) : []);
+  if (dryRun) return [...targets, ...workspaces];
   const deleted: string[] = [];
   try {
+    for (const workspace of workspaces) {
+      removeWorkspace(workspace);
+      deleted.push(workspace);
+    }
     // rm unlinks links inside an entry; it never follows them.
     for (const target of targets) {
       rmSync(target, { recursive: true });
@@ -499,6 +506,41 @@ function deleteSelection({ roots, archives, records, allowed, gone }: DeletableS
   }
   return deleted;
 }
+
+/**
+ * The temporary workspace a run record names, when it is still there: a real
+ * folder named after the run, so a damaged record cannot aim the delete
+ * anywhere else.
+ */
+function runWorkspace(runDir: string): string[] {
+  const record = readJsonSync(join(runDir, "run.json"));
+  const tempDir = record && typeof record === "object" ? (record as { tempDir?: unknown }).tempDir : undefined;
+  if (typeof tempDir !== "string" || !tempDir.startsWith(sep) || basename(tempDir) !== basename(runDir)) return [];
+  try {
+    return lstatSync(tempDir).isDirectory() ? [tempDir] : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Removes a workspace whose frozen folders were made read-only, never
+ * following a link, with each agent's scratch folder under /tmp (Cursor keeps
+ * its chats there).
+ */
+function removeWorkspace(root: string): void {
+  const writable = (directory: string) => {
+    chmodSync(directory, 0o700);
+    for (const entry of readdirSync(directory, { withFileTypes: true })) if (entry.isDirectory() && !entry.isSymbolicLink()) writable(join(directory, entry.name));
+  };
+  const agents = readdirSync(root, { withFileTypes: true }).filter((entry) => entry.isDirectory() && AGENT_ID.test(entry.name)).map((entry) => entry.name);
+  writable(root);
+  rmSync(root, { recursive: true, force: true });
+  for (const id of agents) rmSync(agentScratch(id), { recursive: true, force: true });
+}
+
+/** A producer's or judge's folder in a run workspace. */
+const AGENT_ID = /^[pj]-[0-9a-f]+$/;
 
 /** Whether a path is a symbolic link; one that vanished since the scan is no longer there to delete. */
 function isLink(path: string): boolean {

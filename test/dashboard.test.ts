@@ -171,21 +171,50 @@ async function fixture(t: test.TestContext, extra = 0, decks = false, { series =
       await writeFile(join(runsRoot, runId, "resolved-config.json"), JSON.stringify({ name: runId, arms: [{ label: "a" }], producer: { timeoutMs: 600_000 }, judge: { timeoutMs: 600_000 } }));
     }
   }
-  const server = createUiServer({ archiveRoot, runsRoot });
+  const server = createUiServer({ archiveRoot, runsRoot, key: KEY });
   const port = await listenUi(server, 0);
   t.after(() => new Promise<void>((done) => server.close(() => done())));
   const url = `http://127.0.0.1:${port}/`;
-  const { files } = await (await fetch(`${url}api/experiments`, { signal: AbortSignal.timeout(STEP_MS) })).json() as { files: Record<string, string> };
+  const { files } = await (await fetch(`${url}api/experiments`, { headers: { cookie: `crucible_key=${KEY}` }, signal: AbortSignal.timeout(STEP_MS) })).json() as { files: Record<string, string> };
   return { archiveRoot, runsRoot, url, files, away };
 }
 
+/** The key the test dashboards sign in with. */
+const KEY = "b".repeat(64);
+
+/** A browser signed in to every test dashboard: a cookie belongs to the host, whatever the port. */
 async function newPage(t: test.TestContext, options: { colorScheme?: "light" | "dark" } = {}): Promise<Page> {
   const instance = await chromium.launch({ timeout: STEP_MS });
   t.after(() => instance.close());
-  const page = await instance.newPage(options);
+  const context = await instance.newContext(options);
+  await context.addCookies([{ name: "crucible_key", value: KEY, domain: "127.0.0.1", path: "/", httpOnly: true, sameSite: "Strict" }]);
+  const page = await context.newPage();
   page.setDefaultTimeout(STEP_MS);
   return page;
 }
+
+test("the dashboard distinguishes waiting workers from agents that have started", { skip: !ready, timeout: TEST_MS }, async (t) => {
+  const { url, runsRoot } = await fixture(t);
+  const dir = join(runsRoot, "ab-queued");
+  const now = new Date().toISOString();
+  await mkdir(dir);
+  await writeFile(join(dir, "resolved-config.json"), JSON.stringify({ name: "Queued test", arms: [{ label: "a" }], producer: { timeoutMs: 60_000 }, judge: null }));
+  const state = { runId: "ab-queued", state: "running", createdAt: now, updatedAt: now, producers: { p1: { state: "running", pid: process.pid, toolCalls: 0 } } };
+  await writeFile(join(dir, "state.json"), JSON.stringify(state));
+  const page = await newPage(t);
+  await page.goto(url);
+  const card = page.getByRole("article", { name: "Queued test" });
+  await card.getByText("Waiting or preparing", { exact: true }).waitFor();
+  assert.equal(await card.locator(".dot.pulse").count(), 0);
+  assert.equal(await card.locator("tbody tr td").nth(2).textContent(), "—");
+
+  Object.assign(state.producers.p1, { startedAt: now, lastActivityAt: now });
+  await writeFile(join(dir, "state.json"), JSON.stringify(state));
+  await page.reload();
+  await card.getByText("Working", { exact: true }).waitFor();
+  assert.equal(await card.locator(".dot.pulse").count(), 1);
+  assert.notEqual(await card.locator("tbody tr td").nth(2).textContent(), "—");
+});
 
 test("the dashboard lists both copies of one run, shows their captures, and opens each question", { skip: !ready, timeout: TEST_MS }, async (t) => {
   const { url } = await fixture(t);
@@ -295,6 +324,25 @@ test("the list pages from controls above it and keeps its page in the address", 
   await page.getByLabel("Search results").fill("");
   assert.equal(await range.textContent(), "1–25 of 25");
   assert.equal(await page.getByRole("button", { name: "Next page" }).count(), 0);
+});
+
+test("the live viewer opens Markdown with headings, tables and safe source text", { skip: !ready, timeout: TEST_MS }, async (t) => {
+  const { archiveRoot, url } = await fixture(t);
+  await writeFile(join(archiveRoot, "pages", "outputs", "a", "answer.md"), "# Readable answer\n\n| Check | Result |\n| --- | --- |\n| Sum | Passed |\n\n<script>document.title = 'unsafe'</script>");
+  const page = await newPage(t);
+  await page.goto(url);
+  const rows = page.locator("table.results a.row-link");
+  await rows.first().waitFor();
+  const question = await rows.nth(1).getAttribute("href");
+  assert.ok(question);
+  await page.goto(`${url}${question}/ab-00000001/view/a/answer.md`);
+  const frame = page.frameLocator("dialog.viewer iframe");
+  await frame.getByRole("heading", { name: "Readable answer", level: 1 }).waitFor();
+  assert.equal(await frame.getByRole("cell", { name: "Passed" }).textContent(), "Passed");
+  assert.match(await frame.locator("main").textContent() ?? "", /<script>document.title/);
+  assert.equal(await frame.locator("body").evaluate((body) => body.scrollWidth <= body.clientWidth), true);
+  await page.keyboard.press("Escape");
+  await page.locator("dialog.viewer").waitFor({ state: "detached" });
 });
 
 test("the theme follows the system until chosen, and a chosen theme is painted from the first frame", { skip: !ready, timeout: TEST_MS }, async (t) => {
@@ -536,7 +584,9 @@ test("the date filter keeps rows by their newest run, combines with search, live
   await page.keyboard.press("Enter");
   const panel = page.getByRole("dialog", { name: /Newest run date/ });
   await panel.getByText("By each question's newest run").waitFor();
-  await page.waitForFunction(() => document.activeElement?.textContent?.trim() === "Any time");
+  // Native popover focus can precede the toggle handler, which sets focus again.
+  await page.waitForFunction(() => document.querySelector('button[aria-label^="Newest run date"]')?.getAttribute("aria-expanded") === "true"
+    && document.activeElement?.textContent?.trim() === "Any time");
   await page.keyboard.press("ArrowDown");
   await page.keyboard.press("Enter");
   assert.equal(await hash(), "#/?date=7d", "a new date range starts at the first page");

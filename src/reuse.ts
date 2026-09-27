@@ -1,7 +1,7 @@
 import { stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { AuditReport } from "./audit.js";
-import { agentIdentity, armFor, producerFor } from "./config.js";
+import { agentIdentity, armFor, producerFor, taskFor } from "./config.js";
 import { UserError } from "./errors.js";
 import { assertDirectory, buildManifest, copyTree, manifestFingerprint, verifyManifest } from "./files.js";
 import { readJson, readOptionalJson, writeJson } from "./json.js";
@@ -14,6 +14,7 @@ export interface ReuseRecord extends ReuseConfig {
   frozenAt: string;
   outputHash: string;
   warnings: string[];
+  inputs?: string[];
 }
 
 interface JudgedInputs {
@@ -46,14 +47,14 @@ export async function freezeReusedOutputs(runDir: string, config: ExperimentConf
     if (!["judged", "reported", "cleaned"].includes(view.state) || view.judge?.state !== "complete") {
       throw new UserError(`${arm.label}: reuse requires a successfully judged run, and ${arm.reuse.run} was not judged`);
     }
-    if (previous.config.task !== config.task) throw new UserError(`${arm.label}: reused output has a different task`);
+    const previousArm = armFor(previous.config, arm.reuse.arm);
+    if (taskFor(previous.config, previousArm) !== config.task) throw new UserError(`${arm.label}: reused output has a different task`);
     if (manifestFingerprint(await readJson<FileManifest>(join(previous.runDir, "manifests", "source.json"))) !== source) {
       throw new UserError(`${arm.label}: reused output has different frozen source inputs`);
     }
     const inputs = await readOptionalJson<JudgedInputs>(join(previous.runDir, "judge", "inputs.json"));
     const input = inputs?.outputs[previousId];
     if (!inputs || !input) throw new UserError(`${arm.label}: historical judged-input manifest is unavailable; rejudge the historical run before reuse`);
-    const previousArm = armFor(previous.config, arm.reuse.arm);
     const priorReuse = previousArm.reuse ? await readReuseRecord(previous.runDir, previousId) : undefined;
     let previousSource = join(inputs.directory, input.letter);
     if (!(await stat(previousSource).catch(() => null))?.isDirectory() && priorReuse) {
@@ -84,6 +85,7 @@ export async function freezeReusedOutputs(runDir: string, config: ExperimentConf
     await writeJson(join(frozenDir, "reuse.json"), {
       ...arm.reuse,
       producer: priorReuse?.producer ?? agentIdentity(producerFor(previous.config.producer, previousArm)),
+      inputs: priorReuse?.inputs ?? Object.keys(previousArm.inputs ?? {}),
       frozenAt: new Date().toISOString(), outputHash: manifestFingerprint(input.manifest), warnings,
     } satisfies ReuseRecord);
   }

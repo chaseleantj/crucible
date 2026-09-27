@@ -5,13 +5,13 @@ description: Run a blinded A/B test of coding-agent skills, models, effort level
 
 # A/B test with Crucible
 
-`crucible` runs one to six agents ("arms") on the same copied project and task, each in its own isolated workspace. An arm can carry a candidate skill, a different model or effort, a different agent CLI, or a tool setup. An independent judge then compares the outputs under anonymous letters and scores them against a rubric.
+`crucible` runs one to ten agents ("arms") on the same copied project and task, each in a disposable Linux VM. An arm can carry a candidate skill, a different model or effort, a different agent CLI, or a tool setup. An independent judge then compares the outputs under anonymous letters and scores them against a rubric.
 
 The documentation sits next to the `crucible` executable, in `dirname "$(readlink -f "$(command -v crucible)")"`. Before writing an experiment, read `README.md`, `docs/experiments.md` (every field), and `example.yaml` there. Do not reconstruct the format from memory.
 
 ## Set up
 
-1. Run `crucible doctor`. It checks each agent CLI, its login, the sandbox, and that the judge can take screenshots. If a credential is missing, point the user to `CREDENTIALS.md` in the repository. If Chromium is missing, run the `npm run setup:browsers` command the check prints.
+1. Run `crucible doctor`. It checks the Harbor runtime, agent image, provider logins, and screenshot prerequisites. Follow its runtime setup instructions if needed. If a credential is missing, point the user to `CREDENTIALS.md` in the repository. If Chromium is missing, run the `npm run setup:browsers` command the check prints.
 2. Run `crucible config` to see the user's defaults (skills root, shared folders, exclusions, storage roots). An experiment only states what differs.
 3. Run `crucible init <path>` to write a starter experiment file, then edit it for the user's question:
    - The arms. The first is the one the others are compared against. Vary one thing per arm: a candidate skill, a `producer` override (model, effort, or agent), an `environment`, or a tool (`settings`, `env`, `setup`, `mcpServers`).
@@ -19,7 +19,7 @@ The documentation sits next to the `crucible` executable, in `dirname "$(readlin
    - The same agent, model, effort, and timeout for every arm, unless that is the variable. An arm that changes agent also sets a model and effort that agent accepts.
    - A rubric written before any producer starts, and a judge. Use `judge: none` only when the user wants to see the outputs without a ranking.
 
-Keep the task as plain as the user's own request. A task that spells out quality criteria measures the prompt, not the skill. Leave `sandbox: true` unless the user accepts running without it. Never modify or move the live candidate; the runner works from copies.
+Keep the task as plain as the user's own request. A task that spells out quality criteria measures the prompt, not the skill. VM isolation is required; `sandbox: false` is rejected. Native automatic permission review is enabled. Tasks and setup commands run on Linux, so do not depend on host executables or host `node_modules`. Never modify or move the live candidate; the runner works from copies.
 
 If `prepare` stops because a baseline skill or project file names a candidate, add that skill to `skills.exclude` or trim `source.include`, then prepare again.
 

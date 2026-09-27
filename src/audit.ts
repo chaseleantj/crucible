@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { buildManifest, verifyManifest } from "./files.js";
+import { buildManifest, removeLinks, verifyManifest } from "./files.js";
 import { readJson, writeJson } from "./json.js";
 import { hiddenFrom, scanFiles, scanTree } from "./leaks.js";
 import { MATERIAL_FILE } from "./prepare.js";
@@ -26,9 +26,12 @@ export async function auditRun(run: ResolvedRun): Promise<AuditReport> {
   const material = await readJson<ForbiddenMaterial>(join(run.runDir, MATERIAL_FILE));
   const contextChanges: Record<string, string[]> = {};
   const leakFindings: Record<string, LeakFinding[]> = {};
+  const removedLinks: Record<string, string[]> = {};
 
   for (const [producerId, label] of Object.entries(run.assignment.arms)) {
     const producerDir = join(run.tempDir, producerId);
+    // First, before anything reads the output.
+    if (!run.config.arms.find((arm) => arm.label === label)?.reuse) removedLinks[label] = await removeLinks(join(producerDir, "source"));
     const expectedContext = await readJson<FileManifest>(join(run.runDir, "manifests", `${producerId}-context.json`));
     contextChanges[producerId] = await verifyManifest(join(producerDir, ".context"), expectedContext);
     if (run.config.arms.find((arm) => arm.label === label)?.reuse) {
@@ -60,6 +63,8 @@ export async function auditRun(run: ResolvedRun): Promise<AuditReport> {
     ...Object.entries(contextChanges)
       .filter(([, changes]) => changes.length > 0)
       .map(([producerId, changes]) => `Frozen context changed for ${producerId}: ${changes.join(", ")}`),
+    ...Object.entries(removedLinks).filter(([, paths]) => paths.length > 0)
+      .map(([label, paths]) => `Removed ${paths.length === 1 ? "a link or special file" : `${paths.length} links or special files`} from ${label}'s output, which Crucible never follows: ${paths.join(", ")}`),
     ...Object.entries(leakFindings).flatMap(([label, findings]) => findings
       .map((finding) => `Candidate identity material from another arm reached ${label}: ${finding.path} (${finding.identity.label})`)),
   ];

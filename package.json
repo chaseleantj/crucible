@@ -1,7 +1,6 @@
 {
   "name": "crucible",
   "version": "0.2.0",
-  "private": true,
   "description": "Blinded A/B tests of coding-agent skills, models, and harnesses",
   "keywords": [
     "ab-testing",
@@ -42,7 +41,13 @@
     "example.yaml",
     "examples",
     "skills",
-    "CREDENTIALS.md"
+    "CREDENTIALS.md",
+    "runtime/worker.py",
+    "runtime/relay.py",
+    "runtime/setup.sh",
+    "runtime/Dockerfile",
+    "runtime/requirements.txt",
+    "runtime/image.json"
   ],
   "scripts": {
     "build": "npm run build:cli && npm run build:ui",
@@ -52,6 +57,7 @@
     "test": "npm run build && CRUCIBLE_CONFIG=/dev/null node --test dist/test/*.test.js",
     "dev:ui": "vite --config ui/vite.config.ts",
     "setup:browsers": "playwright install chromium",
+    "setup:runtime": "bash runtime/setup.sh",
     "prepack": "rm -rf dist && npm run build"
   },
   "dependencies": {

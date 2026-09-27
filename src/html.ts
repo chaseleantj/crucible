@@ -279,7 +279,7 @@ const STYLE = `
   .prose table { width: auto; max-width: 100%; }
   figure { margin: 0 0 40px; }
   figcaption { margin-bottom: 12px; }
-  /* Panels keep a readable width and wrap into rows, so six arms stay legible instead of shrinking to thumbnails. */
+  /* Panels keep a readable width and wrap into rows, so larger experiments stay legible instead of shrinking to thumbnails. */
   .panels { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 24px; }
   .arm img { display: block; width: 100%; border: 1px solid var(--line); border-radius: 4px; }
   .arm a { display: block; }

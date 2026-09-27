@@ -14,7 +14,7 @@ import { formatBytes, pruneCandidates, pruneRun } from "./prune.js";
 import { reportRun, cleanRun } from "./report.js";
 import { listRuns, loadRun, loadRunLocation } from "./run.js";
 import { agentChecks, startRun, stopRun } from "./runner.js";
-import { hiddenFolders, judgePlaywrightCheck, nodeModulesWarning, sandboxSelfTest } from "./sandbox.js";
+import { harborChecks } from "./harbor.js";
 import { renderSeries, renderSeriesIndex, resultCell } from "./series.js";
 import { renderStatus, statusJson, table, watchStatus } from "./status.js";
 import { checkArchive, scanExperiments } from "./store.js";
@@ -39,7 +39,7 @@ const HELP = `Usage:
   crucible series [<name>]             tally the runs of one series, or list every series
   crucible check [<dir>...]            validate archive entries (default: the configured archive)
   crucible prune [--older-than <days>] [--yes]  delete finished local runs the archive already holds; dry run without --yes
-  crucible doctor [<agent>...]         check agent CLIs, credentials, the sandbox, and Chromium without starting a run
+  crucible doctor [<agent>...]         check Harbor, credentials, and Chromium without starting a run
   crucible config                      show the resolved settings and where each came from
   crucible ui [--port N] [--no-open]   open the dashboard of running tests and results`;
 
@@ -209,20 +209,15 @@ async function doctorCommand(names: string[]): Promise<void> {
   const unknown = names.filter((name) => !(AGENTS as readonly string[]).includes(name));
   if (unknown.length > 0) throw new UserError(`Unknown agent: ${unknown.join(", ")}. Choose from ${AGENTS.join(", ")}`);
   const agents = (names.length > 0 ? names : [...AGENTS]) as AgentName[];
-  const user = loadUserConfig().values;
-  const hidden = hiddenFolders(user, { runRoot: user.runsRoot, tempRoot: user.tempRoot, archiveRoot: user.archiveRoot });
   const checks = await agentChecks(agents);
   const chromium = await chromiumProblem();
   const environment = [
-    ...await sandboxSelfTest(),
+    ...await harborChecks(),
     { name: "Chromium for screenshots", passed: !chromium, ...(chromium ? { detail: chromium } : {}) },
-    await judgePlaywrightCheck(user.nodeModules, hidden),
   ];
   for (const check of [...checks, ...environment]) {
     stdout.write(`${check.passed ? "ok  " : "FAIL"}  ${check.name}${check.detail ? `: ${check.detail}` : ""}\n`);
   }
-  const warning = nodeModulesWarning(user.nodeModules, hidden);
-  if (warning) stdout.write(`warn  ${warning}\n`);
   const ready = agents.filter((agent) => checks.filter((check) => check.name.startsWith(`${agent} `)).every((check) => check.passed));
   const agentsFail = names.length > 0 ? ready.length < agents.length : ready.length === 0;
   if (agentsFail || environment.some((check) => !check.passed)) process.exitCode = 1;
