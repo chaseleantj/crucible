@@ -33,24 +33,6 @@ test("experiment files reject unknown fields, and name what the arms list replac
   await assert.rejects(loadConfig(join(dir, "experiment.yaml")), /producer.control and producer.treatment were replaced by arms/);
 });
 
-test("legacy sandbox false is rejected without a host fallback", async (t) => {
-  const dir = await tempDirectory(t);
-  const base = [
-    "name: t",
-    "arms: [{}, {candidate: {path: ./skill}}]",
-    "source: {path: ., include: ['*']}",
-    "task: do it",
-    "producer: {agent: claude}",
-    "judge: {agent: claude, rubric: ./rubric.md}",
-  ];
-  await mkdir(join(dir, "skill"));
-  await writeFile(join(dir, "rubric.md"), "quality\n");
-  await writeFile(join(dir, "on.yaml"), base.join("\n"));
-  await writeFile(join(dir, "off.yaml"), [...base, "sandbox: false"].join("\n"));
-  assert.equal((await loadConfig(join(dir, "on.yaml"))).sandbox, true);
-  await assert.rejects(loadConfig(join(dir, "off.yaml")), /no host execution fallback/);
-});
-
 test("arms can differ in producer model instead of a candidate skill", async (t) => {
   const root = await tempDirectory(t);
   const paths: PathsConfig = { runRoot: join(root, "runs"), tempRoot: join(root, "temp"), archiveRoot: join(root, "archive") };

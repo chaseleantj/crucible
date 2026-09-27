@@ -57,7 +57,9 @@ test("guest runtime defaults are explicit and legacy host execution is rejected"
     return loadConfig(path);
   };
   const paths = { runRoot: join(root, "runs"), tempRoot: join(root, "temp"), archiveRoot: join(root, "archive") };
-  assert.deepEqual(runtimeFor(await load()), { concurrency: 2, cpus: 2, memoryMb: 4096 });
+  const defaults = await load();
+  assert.equal(defaults.sandbox, true);
+  assert.deepEqual(runtimeFor(defaults), { concurrency: 2, cpus: 2, memoryMb: 4096 });
   assert.deepEqual(runtimeFor(await load({ runtime: { concurrency: 1, memoryMb: 2048 } })), { concurrency: 1, cpus: 2, memoryMb: 2048 });
   await assert.rejects(load({ sandbox: false }), /no host execution fallback/);
   await assert.rejects(load({ runtime: { cpus: 0 } }), /positive integer/);

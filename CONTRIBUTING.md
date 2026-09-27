@@ -8,14 +8,21 @@ Crucible runs agents in Linux guests through Harbor and Apple Container on Apple
 npm ci
 npm run check        # type-check the CLI and the tests
 npm run build        # the CLI to dist/src, the dashboard to dist/ui
-npm test             # rebuilds the CLI and the dashboard, then runs every test in test/
+npm test             # rebuilds the CLI and the dashboard, then runs the default TypeScript suite
 ```
 
 The tests do not start agent sessions, read your keychain, or read your `~/.config/crucible/config.yaml`. A few skip themselves when something is missing:
 
 - the capture tests and the dashboard tests, which drive the built dashboard in a browser, skip when Playwright's Chromium is not installed (`npm run setup:browsers`; CI runs it);
-- the Codex MCP test skips when the `codex` CLI is not on your PATH;
 - tests that exercise a real Harbor guest require `npm run setup:runtime`; ordinary unit tests use fake transports and make no model calls.
+
+The optional Codex compatibility test lives in `test/integration/`. It checks MCP configuration parsing against the `codex` executable on your PATH without starting an agent session. Run it when changing the Codex adapter or checking a new CLI version:
+
+```sh
+npm run test:codex
+```
+
+This command requires an installed Codex CLI and fails if it is missing. It is separate from `npm test` and CI so the default suite does not depend on a local agent installation.
 
 Run the Python worker and relay tests with Python 3.12+. They use the standard library and fake guest transports, so they need no runtime installation. The relay test needs local loopback sockets:
 

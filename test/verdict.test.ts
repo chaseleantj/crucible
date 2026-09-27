@@ -49,7 +49,7 @@ test("ten anonymous outputs can be scored and revealed, including a winner at J"
   assert.equal(revealed.totals["variant-j"], 10);
 });
 
-test("candle totals round decimal halves consistently with their weighted scores", () => {
+test("weighted totals round decimal halves consistently before computing margins", () => {
   const verdict = parseVerdict({
     winner: "A",
     confidence: 0.77,
