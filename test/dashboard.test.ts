@@ -543,11 +543,10 @@ test("seven arms scroll sideways under pinned headers, four at a time", { skip: 
 test("live, synced decks turn together: from the page's arrows, and from an arrow pressed in one of them", { skip: !ready, timeout: TEST_MS }, async (t) => {
   const { url } = await fixture(t, 0, true);
   const page = await newPage(t);
-  const frame = (arm: string) => page.frames().find((candidate) => candidate.url().includes(`/outputs/${arm}/`))!;
+  const frame = (arm: string) => page.frameLocator(`.compare iframe[src*="/outputs/${arm}/"]`);
   const slide = (arm: string, text: string) => frame(arm).getByText(text, { exact: true }).waitFor();
   await page.goto(`${url}#/q/ab-00000002/ab-00000002`);
   await page.getByRole("button", { name: "Live", exact: true }).click();
-  await page.waitForFunction(() => document.querySelectorAll(".compare iframe").length === 2);
   await slide("a", "Slide 2");
   await slide("b", "Slide 3");
 
