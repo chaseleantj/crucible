@@ -1,23 +1,20 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { executeAgent, guestPath } from "../src/agent.js";
 import { executionCatalog } from "../src/runner.js";
 import { adapterFor, guestConfiguration } from "../src/adapters.js";
 import type { HarborCommand, HarborSession } from "../src/harbor.js";
-import { createRunState, readRunState, resetJudge, resetProducer, setRunState, updateJudge, updateProducer } from "../src/state.js";
 import type { NormalizedEvent, ResolvedRun } from "../src/types.js";
+import { setEnvironment } from "./support/environment.js";
+import { tempDirectory } from "./support/files.js";
 
 test("guest execution preserves split native events, usage and stdin without host paths or provider credentials", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "crucible-guest-agent-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await tempDirectory(t, "crucible-guest-agent-");
   const runtimeDir = join(directory, ".runtime");
   await mkdir(join(directory, "source"));
-  const key = process.env.OPENAI_API_KEY;
-  process.env.OPENAI_API_KEY = "private-test-provider-key";
-  t.after(() => { if (key === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = key; });
+  setEnvironment(t, { OPENAI_API_KEY: "private-test-provider-key" });
   const events: NormalizedEvent[] = [];
   const uploaded: string[] = [];
   let execution: HarborCommand | undefined;
@@ -61,11 +58,8 @@ test("runtime configuration maps capsule paths and rejects dependencies on the h
 });
 
 test("Cursor model discovery receives only the broker stand-in through native Linux token auth", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "crucible-cursor-guest-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const home = process.env.HOME;
-  process.env.HOME = directory;
-  t.after(() => { if (home === undefined) delete process.env.HOME; else process.env.HOME = home; });
+  const directory = await tempDirectory(t, "crucible-cursor-guest-");
+  setEnvironment(t, { HOME: directory });
   await mkdir(join(directory, ".cursor"));
   const claims = Buffer.from(JSON.stringify({ sub: "test-user", exp: Math.floor(Date.now() / 1000) + 3600 })).toString("base64url");
   const login = `eyJhbGciOiJIUzI1NiJ9.${claims}.private-provider-signature`;
@@ -113,32 +107,6 @@ test("Cursor model discovery receives only the broker stand-in through native Li
     assert.deepEqual(JSON.parse(await readFile(join(logDir, "model-discovery.json"), "utf8")), discovery);
   });
 });
-
-test("late worker callbacks cannot overwrite a stopped producer, judge or run", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "crucible-stopped-state-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  await createRunState(directory, "ab-test", ["p-test"]);
-  await setRunState(directory, "running");
-  await resetJudge(directory);
-  await updateProducer(directory, "p-test", { state: "stopped" });
-  await updateJudge(directory, { state: "stopped" });
-  await setRunState(directory, "stopped");
-  await Promise.all([
-    updateProducer(directory, "p-test", { state: "complete" }),
-    updateJudge(directory, { state: "failed" }),
-    setRunState(directory, "produced", "running"),
-  ]);
-  const stopped = await readRunState(directory);
-  assert.equal(stopped.state, "stopped");
-  assert.equal(stopped.producers["p-test"]?.state, "stopped");
-  assert.equal(stopped.judge?.state, "stopped");
-  await resetProducer(directory, "p-test");
-  await resetJudge(directory);
-  await setRunState(directory, "running");
-  await updateProducer(directory, "p-test", { state: "running" });
-  assert.equal((await readRunState(directory)).producers["p-test"]?.state, "running", "explicit retry resets cancellation");
-});
-
 
 test("guest discovery catalogs retain usable definitions without treatment annotations", () => {
   const catalog = [

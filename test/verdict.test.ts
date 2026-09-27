@@ -2,6 +2,34 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { judgeLetters, parseVerdict, revealVerdict, weightedTotal } from "../src/verdict.js";
 
+test("verdict.json is checked, normalized, and revealed against the assignment", () => {
+  const verdict = parseVerdict({
+    winner: "B",
+    confidence: 85,
+    scores: [
+      { criterion: "Reading", weight: 30, scores: { A: 6, B: 9 } },
+      { criterion: "Craft", weight: 10, scores: { A: 9, B: 6.5 } },
+    ],
+    referenceGuess: { output: "B", confidence: 0.6 },
+    summary: " Output B holds one measure; A's cards break it. ",
+  }, judgeLetters(2));
+  assert.equal(verdict.confidence, 0.85);
+  const revealed = revealVerdict(verdict, { A: "hazel", B: "refero" }, ["hazel", "refero"]);
+  assert.equal(revealed.winner, "refero");
+  assert.equal(revealed.summary, "refero holds one measure; hazel's cards break it.");
+  assert.deepEqual(revealed.totals, { hazel: 6.75, refero: 8.38 });
+  assert.equal(revealed.margin, 1.63);
+  assert.deepEqual(revealed.referenceGuess, { arm: "refero", confidence: 0.6, correct: false });
+  // The judge's choice stands even when its own numbers disagree; the margin says so.
+  const against = revealVerdict({ ...verdict, winner: "A" }, { A: "hazel", B: "refero" }, ["hazel", "refero"]);
+  assert.equal(against.winner, "hazel");
+  assert.equal(against.margin, -1.63);
+  assert.throws(() => parseVerdict({ winner: "C", confidence: 0.5, scores: [] }, judgeLetters(2)), /winner must be/);
+  assert.throws(() => parseVerdict({ winner: "A", confidence: 0.5, scores: [] }, judgeLetters(2)), /non-empty/);
+  assert.throws(() => parseVerdict({ winner: "A", confidence: 0.5, scores: [{ criterion: "x", weight: 1, scores: { A: 11, B: 1 } }] }, judgeLetters(2)), /between 0 and 10/);
+  assert.throws(() => parseVerdict({ winner: "A", confidence: 150, scores: [{ criterion: "x", weight: 1, scores: { A: 1, B: 1 } }] }, judgeLetters(2)), /confidence must be/);
+});
+
 test("ten anonymous outputs can be scored and revealed, including a winner at J", () => {
   const letters = judgeLetters(10);
   assert.deepEqual(letters, ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"]);

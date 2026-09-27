@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { loadConfig } from "../src/config.js";
 import { loadRun } from "../src/run.js";
 import { loadUserConfig, userConfigPath } from "../src/user-config.js";
+import { setEnvironment } from "./support/environment.js";
+import { tempDirectory } from "./support/files.js";
 
 test("the config file is found through CRUCIBLE_CONFIG, then XDG_CONFIG_HOME, then ~/.config", () => {
   assert.equal(userConfigPath({ CRUCIBLE_CONFIG: "/x/crucible.yaml", XDG_CONFIG_HOME: "/xdg" }), "/x/crucible.yaml");
@@ -26,8 +28,7 @@ test("with no config file every setting is a generic default", () => {
 });
 
 test("environment variables beat the config file, which beats the defaults", async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "crucible-config-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await tempDirectory(t, "crucible-config-");
   const file = join(root, "config.yaml");
   await writeFile(file, [
     "runsRoot: ./runs",
@@ -52,30 +53,22 @@ test("environment variables beat the config file, which beats the defaults", asy
 });
 
 test("an experiment overrides the config file, and its exclusions add to the configured ones", async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "crucible-config-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await tempDirectory(t, "crucible-config-");
   await writeFile(join(root, "config.yaml"), "skills: {root: ./configured, excludeCategories: [meta], exclude: [one]}\nsubagents: {exclude: [manager]}\n");
   await writeFile(join(root, "experiment.yaml"), [
     "name: t", "arms: [{}]", "source: {path: ., include: ['*']}", "task: t", "producer: {agent: claude}", "judge: none",
     "skills: {root: ./mine, excludeCategories: [], exclude: [two]}",
   ].join("\n"));
-  const previous = process.env.CRUCIBLE_CONFIG;
-  process.env.CRUCIBLE_CONFIG = join(root, "config.yaml");
-  try {
-    const config = await loadConfig(join(root, "experiment.yaml"));
-    assert.equal(config.skills.root, join(root, "mine"));
-    assert.deepEqual(config.skills.excludeCategories, []);
-    assert.deepEqual(config.skills.exclude, ["one", "two"]);
-    assert.deepEqual(config.subagents.exclude, ["manager"]);
-  } finally {
-    if (previous === undefined) delete process.env.CRUCIBLE_CONFIG;
-    else process.env.CRUCIBLE_CONFIG = previous;
-  }
+  setEnvironment(t, { CRUCIBLE_CONFIG: join(root, "config.yaml") });
+  const config = await loadConfig(join(root, "experiment.yaml"));
+  assert.equal(config.skills.root, join(root, "mine"));
+  assert.deepEqual(config.skills.excludeCategories, []);
+  assert.deepEqual(config.skills.exclude, ["one", "two"]);
+  assert.deepEqual(config.subagents.exclude, ["manager"]);
 });
 
 test("a legacy run record, from before shared folders were listed, reads as one root's crafts and styles", async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "crucible-config-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await tempDirectory(t, "crucible-config-");
   const runId = "ab-0123abcd";
   const runDir = join(root, "runs", runId);
   await mkdir(runDir, { recursive: true });

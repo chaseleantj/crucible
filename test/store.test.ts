@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, rm, stat, symlink, writeFile } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { chmod, mkdir, stat, symlink, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join, relative } from "node:path";
 import test from "node:test";
 import { copyTree } from "../src/files.js";
@@ -10,19 +10,13 @@ import { DeleteError, copiedRunIssues, deleteEach, deleteEntries, entryIssues, r
 import { renderStatus, statusJson } from "../src/status.js";
 import type { ResolvedRun } from "../src/types.js";
 
+import { tempDirectory } from "./support/files.js";
+import { judgedResult } from "./support/results.js";
+
 const PNG = Buffer.from("89504e470d0a1a0a", "hex");
 
 function judged(runId: string, series: string | null, winner: string, totals: Record<string, number>, reportedAt: string) {
-  const labels = Object.keys(totals);
-  return {
-    runId, name: `Question ${series ?? runId}`, series, task: "Write a page.", reportedAt, environment: "clean",
-    arms: labels.map((label) => ({ label, candidate: null, replaces: null })),
-    producers: Object.fromEntries(labels.map((label) => [label, { agent: "claude", model: null, effort: null }])),
-    cost: {}, warnings: [], shots: null,
-    judgeAgent: { agent: "claude", model: null, effort: null }, winner, confidence: 0.7, totals, margin: 1,
-    scores: [{ criterion: "clarity", weight: 1, scores: totals }],
-    referenceGuess: { arm: null, confidence: 0.5, correct: null }, summary: "One was clearer.",
-  };
+  return judgedResult({ runId, series, winner, totals, reportedAt, name: `Question ${series ?? runId}`, margin: 1, summary: "One was clearer." });
 }
 
 async function archive(root: string, name: string, result: unknown, outputs: Record<string, Record<string, string | Buffer>> = {}) {
@@ -51,10 +45,15 @@ async function runRecord(root: string, runId: string, state: string, producer: R
   return dir;
 }
 
-async function fixture() {
-  const base = await mkdtemp(join(tmpdir(), "crucible-store-"));
+async function roots(t: test.TestContext) {
+  const base = await tempDirectory(t, "crucible-store-");
   const archiveRoot = join(base, "archive");
   const runsRoot = join(base, "runs");
+  return { base, archiveRoot, runsRoot };
+}
+
+async function fixture(t: test.TestContext) {
+  const { base, archiveRoot, runsRoot } = await roots(t);
   await mkdir(archiveRoot, { recursive: true });
   await writeFile(join(archiveRoot, "README.md"), "# Archive\n\nEvery **finished** run.\n");
   await archive(archiveRoot, "first", judged("ab-00000001", "pages", "a", { a: 8, b: 6 }, "2026-01-01T00:00:00Z"),
@@ -74,8 +73,7 @@ async function fixture() {
 }
 
 test("a series whose judged runs pick different winners is split; the higher mean still leads", async (t) => {
-  const base = await mkdtemp(join(tmpdir(), "crucible-store-"));
-  t.after(() => rm(base, { recursive: true, force: true }));
+  const base = await tempDirectory(t, "crucible-store-");
   const archiveRoot = join(base, "archive");
   await archive(archiveRoot, "first", judged("ab-00000011", "split", "a", { a: 9, b: 6 }, "2026-01-01T00:00:00Z"));
   await archive(archiveRoot, "second", judged("ab-00000012", "split", "b", { a: 7, b: 8 }, "2026-02-01T00:00:00Z"));
@@ -86,8 +84,7 @@ test("a series whose judged runs pick different winners is split; the higher mea
 });
 
 test("a series of one-arm runs counts no wins and goes to the higher mean total", async (t) => {
-  const base = await mkdtemp(join(tmpdir(), "crucible-store-"));
-  t.after(() => rm(base, { recursive: true, force: true }));
+  const base = await tempDirectory(t, "crucible-store-");
   const archiveRoot = join(base, "archive");
   const solo = (runId: string, label: string, total: number, at: string) => ({ ...judged(runId, "solo", label, { [label]: total }, at), margin: null, referenceGuess: null });
   await archive(archiveRoot, "claude", solo("ab-00000021", "claude", 8.9, "2026-01-01T00:00:00Z"));
@@ -105,8 +102,7 @@ test("a series of one-arm runs counts no wins and goes to the higher mean total"
 });
 
 test("scanExperiments groups archived runs into questions and splits live runs", async (t) => {
-  const { base, archiveRoot, runsRoot } = await fixture();
-  t.after(() => rm(base, { recursive: true, force: true }));
+  const { archiveRoot, runsRoot } = await fixture(t);
   const scan = scanExperiments({ archiveRoot, runsRoot });
   assert.equal(scan.root, archiveRoot);
   assert.equal(scan.blurb, "Every finished run.");
@@ -136,8 +132,7 @@ test("scanExperiments groups archived runs into questions and splits live runs",
 });
 
 test("readArchive rejects captures that leave the archive", async (t) => {
-  const { base, archiveRoot } = await fixture();
-  t.after(() => rm(base, { recursive: true, force: true }));
+  const { archiveRoot } = await roots(t);
   const result = judged("ab-00000009", null, "a", { a: 5, b: 4 }, "2026-05-01T00:00:00Z");
   const dir = await archive(archiveRoot, "escaping", { ...result, shots: { arms: { a: [{ page: "index.html", desktop: "../../x.png", phone: null }] } } });
   const read = readArchive(dir);
@@ -146,8 +141,7 @@ test("readArchive rejects captures that leave the archive", async (t) => {
 });
 
 test("readArchive lists every HTML page an arm produced, the captured one first", async (t) => {
-  const { base, archiveRoot } = await fixture();
-  t.after(() => rm(base, { recursive: true, force: true }));
+  const { base, archiveRoot } = await roots(t);
   const result = judged("ab-00000010", null, "a", { a: 5, b: 4 }, "2026-05-01T00:00:00Z");
   const shots = { arms: { a: [{ page: "Slide 4", artifact: "talk.html#/4", desktop: null, phone: null }] } };
   const dir = await archive(archiveRoot, "pages", { ...result, shots }, {
@@ -162,8 +156,7 @@ test("readArchive lists every HTML page an arm produced, the captured one first"
 });
 
 test("readArchive opens an SVG arm as its output and a live page", async (t) => {
-  const { base, archiveRoot } = await fixture();
-  t.after(() => rm(base, { recursive: true, force: true }));
+  const { archiveRoot } = await roots(t);
   const result = judged("ab-00000011", null, "a", { a: 5, b: 4 }, "2026-05-01T00:00:00Z");
   const shots = { arms: { a: [{ page: "Icon", artifact: "cup.svg", desktop: null, phone: null }] } };
   const dir = await archive(archiveRoot, "svg", { ...result, shots }, {
@@ -183,8 +176,7 @@ test("resultIssues accepts a one-arm run without a reference guess", () => {
 });
 
 test("entryIssues and copiedRunIssues require a screenshot for visual output", async (t) => {
-  const { base, archiveRoot } = await fixture();
-  t.after(() => rm(base, { recursive: true, force: true }));
+  const { archiveRoot } = await fixture(t);
   assert.deepEqual(entryIssues(join(archiveRoot, "first")), []);
   const dir = await archive(archiveRoot, "unpictured", judged("ab-0000000b", null, "a", { a: 5, b: 4 }, "2026-05-01T00:00:00Z"),
     { a: { "index.html": "<p>a</p>" } });
@@ -200,8 +192,7 @@ test("entryIssues and copiedRunIssues require a screenshot for visual output", a
 });
 
 test("entryIssues accepts a visual arm whose every capture says why it has no picture", async (t) => {
-  const { base, archiveRoot } = await fixture();
-  t.after(() => rm(base, { recursive: true, force: true }));
+  const { archiveRoot } = await roots(t);
   const broken = (error: string) => ({ page: "Initial view", artifact: "index.html", desktop: null, phone: null, error });
   const result = (shots: unknown[]) => ({ ...judged("ab-0000000c", null, "a", { a: 1 }, "2026-05-01T00:00:00Z"), margin: null, referenceGuess: null, shots: { arms: { a: shots } } });
   const explained = await archive(archiveRoot, "broken", result([broken("THREE.OrbitControls is not a constructor"), broken("Same error")]),
@@ -213,8 +204,7 @@ test("entryIssues accepts a visual arm whose every capture says why it has no pi
 });
 
 test("entryIssues, copiedRunIssues, and copyTree ignore macOS metadata", async (t) => {
-  const { base, archiveRoot } = await fixture();
-  t.after(() => rm(base, { recursive: true, force: true }));
+  const { base, archiveRoot } = await fixture(t);
   const dir = join(archiveRoot, "first");
   await mkdir(join(dir, "outputs", "a"), { recursive: true });
   for (const junk of [".DS_Store", "outputs/.DS_Store", "outputs/a/.DS_Store", "outputs/a/._index.png", "._README.md"]) {
@@ -230,8 +220,7 @@ test("entryIssues, copiedRunIssues, and copyTree ignore macOS metadata", async (
 });
 
 test("deleteEntries removes an archive with its run record and refuses anything else", async (t) => {
-  const { base, archiveRoot, runsRoot } = await fixture();
-  t.after(() => rm(base, { recursive: true, force: true }));
+  const { base, archiveRoot, runsRoot } = await fixture(t);
   const roots = { archiveRoot, runsRoot };
   const refused = (paths: string[], reason: DeleteError["reason"]) =>
     assert.throws(() => deleteEntries(roots, paths), (error: unknown) => error instanceof DeleteError && error.reason === reason);
@@ -256,16 +245,14 @@ test("deleteEntries removes an archive with its run record and refuses anything 
 });
 
 test("deleteEntries refuses an archive whose run still has an agent at work", async (t) => {
-  const { base, archiveRoot, runsRoot } = await fixture();
-  t.after(() => rm(base, { recursive: true, force: true }));
+  const { archiveRoot, runsRoot } = await fixture(t);
   const dir = await archive(archiveRoot, "busy", judged("ab-00000006", null, "a", { a: 5, b: 4 }, "2026-05-01T00:00:00Z"));
   assert.throws(() => deleteEntries({ archiveRoot, runsRoot }, [dir]), (error: unknown) => error instanceof DeleteError && error.reason === "active");
   assert.ok(existsSync(dir));
 });
 
 test("deleteEach deletes each selection whole or not at all, reads the store once, and a dry run removes nothing", async (t) => {
-  const { base, archiveRoot, runsRoot } = await fixture();
-  t.after(() => rm(base, { recursive: true, force: true }));
+  const { base, archiveRoot, runsRoot } = await fixture(t);
   const roots = { archiveRoot, runsRoot };
   const busy = await archive(archiveRoot, "busy", judged("ab-00000006", null, "a", { a: 5, b: 4 }, "2026-05-01T00:00:00Z"));
   const first = join(archiveRoot, "first");
@@ -287,8 +274,7 @@ test("deleteEach deletes each selection whole or not at all, reads the store onc
 });
 
 test("storeRoots resolves the roots as the CLI does: environment, then config file, then defaults", async (t) => {
-  const base = await mkdtemp(join(tmpdir(), "crucible-roots-"));
-  t.after(() => rm(base, { recursive: true, force: true }));
+  const base = await tempDirectory(t, "crucible-roots-");
   const config = join(base, "config.yaml");
   await writeFile(config, "archiveRoot: ./results\nrunsRoot: /tmp/crucible-roots-runs\n");
   assert.deepEqual(storeRoots({ CRUCIBLE_CONFIG: config }), { archiveRoot: join(base, "results"), runsRoot: "/tmp/crucible-roots-runs" });
@@ -299,8 +285,7 @@ test("storeRoots resolves the roots as the CLI does: environment, then config fi
 });
 
 test("a run is in flight only while an agent is really at work, and deletable otherwise", async (t) => {
-  const base = await mkdtemp(join(tmpdir(), "crucible-live-"));
-  t.after(() => rm(base, { recursive: true, force: true }));
+  const base = await tempDirectory(t, "crucible-live-");
   const archiveRoot = join(base, "archive");
   const runsRoot = join(base, "runs");
   const dead = spawnSync("/usr/bin/true").pid;
@@ -330,8 +315,7 @@ test("a run is in flight only while an agent is really at work, and deletable ot
 });
 
 test("queued workers stay protected while the CLI and dashboard show the agent has not started", async (t) => {
-  const base = await mkdtemp(join(tmpdir(), "crucible-queued-"));
-  t.after(() => rm(base, { recursive: true, force: true }));
+  const base = await tempDirectory(t, "crucible-queued-");
   const roots = { archiveRoot: join(base, "archive"), runsRoot: join(base, "runs") };
   const oldActivity = new Date(Date.now() - 20 * 60_000).toISOString();
   const dir = await runRecord(roots.runsRoot, "ab-queued", "running", {
@@ -363,8 +347,7 @@ test("queued workers stay protected while the CLI and dashboard show the agent h
 });
 
 test("each question has a key of its own: its series or run ID, told apart only on collision", async (t) => {
-  const { base, archiveRoot, runsRoot } = await fixture();
-  t.after(() => rm(base, { recursive: true, force: true }));
+  const { archiveRoot, runsRoot } = await fixture(t);
   const keys = () => scanExperiments({ archiveRoot, runsRoot }).questions.map((question) => question.key).sort();
   assert.deepEqual(keys(), ["ab-00000004", "pages"]);
   await archive(archiveRoot, "copy", { ...judged("ab-00000004", null, "a", { a: 1 }, "2026-04-01T00:00:00Z"), judged: false });
@@ -373,8 +356,7 @@ test("each question has a key of its own: its series or run ID, told apart only 
 });
 
 test("a run whose experiment set judge: none is listed and can be deleted", async (t) => {
-  const { base, archiveRoot, runsRoot } = await fixture();
-  t.after(() => rm(base, { recursive: true, force: true }));
+  const { archiveRoot, runsRoot } = await roots(t);
   const dir = await runRecord(runsRoot, "ab-0000000f", "failed", { state: "failed", toolCalls: 0 });
   await writeFile(join(dir, "resolved-config.json"), JSON.stringify({ name: "Unjudged", arms: [{ label: "a" }], producer: { timeoutMs: 60_000 }, judge: null }));
   const { live } = scanExperiments({ archiveRoot, runsRoot });
@@ -385,11 +367,7 @@ test("a run whose experiment set judge: none is listed and can be deleted", asyn
 });
 
 test("deleting a run record removes its temporary workspace too, and nothing a damaged record names", async (t) => {
-  const { base, archiveRoot, runsRoot } = await fixture();
-  t.after(async () => {
-    await chmod(join(base, "temp", "ab-00000007", "p1", ".context"), 0o700).catch(() => {});
-    await rm(base, { recursive: true, force: true });
-  });
+  const { base, archiveRoot, runsRoot } = await fixture(t);
   const workspace = join(base, "temp", "ab-00000007");
   await mkdir(join(workspace, "p1", ".context"), { recursive: true });
   await writeFile(join(workspace, "p1", ".context", "rubric.md"), "frozen\n");
@@ -407,8 +385,7 @@ test("deleting a run record removes its temporary workspace too, and nothing a d
 });
 
 test("deleteEntries resolves its roots once, so a relative runs root still finds its records", async (t) => {
-  const { base, archiveRoot, runsRoot } = await fixture();
-  t.after(() => rm(base, { recursive: true, force: true }));
+  const { archiveRoot, runsRoot } = await fixture(t);
   const roots = { archiveRoot: relative(process.cwd(), archiveRoot), runsRoot: relative(process.cwd(), runsRoot) };
   assert.deepEqual(deleteEntries(roots, [join(runsRoot, "ab-00000007")]), [join(runsRoot, "ab-00000007")]);
   assert.deepEqual(deleteEntries(roots, [join(archiveRoot, "first")]), [join(archiveRoot, "first"), join(runsRoot, "ab-00000001")]);
