@@ -462,6 +462,9 @@ test("Cursor registers frozen plugin reviewers with plain names and inherited se
 
 test("Codex delegates to its frozen reviewer with fresh context and inherited settings", async () => {
   const producerDir = await mkdtemp(join(tmpdir(), "crucible-test-"));
+  const savedKey = process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY = "crucible-test-key";
+  let command;
   try {
     const contextDir = join(producerDir, ".context");
     await mkdir(join(contextDir, "subagents"), { recursive: true });
@@ -469,7 +472,7 @@ test("Codex delegates to its frozen reviewer with fresh context and inherited se
     await writeFile(join(contextDir, "subagent-catalog.json"), JSON.stringify(catalog));
     await writeFile(join(contextDir, "subagents/critic.md"), "---\nname: critic\ndescription: reviews\n---\nInspect independently.\n");
     const prompt = subagentLoader(catalog, "codex", contextDir);
-    const command = await adapterFor("codex").prepare({
+    command = await adapterFor("codex").prepare({
       producerDir, cwd: join(producerDir, "source"), runtimeDir: join(producerDir, ".runtime"), prompt,
       config: { agent: "codex", model: "gpt-6-astra", effort: "low", timeoutMs: 1000 },
     });
@@ -481,7 +484,12 @@ test("Codex delegates to its frozen reviewer with fresh context and inherited se
     assert.ok(!command.stdin.includes("Task tool"));
     assert.equal(subagentLoader([], "codex", contextDir), "");
     assert.match(subagentLoader(catalog, "claude", contextDir), /Task tool/);
-  } finally { await removeTree(producerDir); }
+  } finally {
+    await command?.release?.();
+    if (savedKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = savedKey;
+    await removeTree(producerDir);
+  }
 });
 
 test("the claude adapter hands the producer the arm's own settings file", async () => {
