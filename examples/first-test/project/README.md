@@ -1,3 +1,3 @@
-# Icon
+# SVG illustration
 
 Put the deliverable in this folder. It must open directly from disk.

@@ -22,7 +22,7 @@ runtime:
 
 Omitted fields keep their defaults. These values must be positive integers; concurrency has no fixed software maximum. Simultaneous runs must agree on concurrency, and a conflicting setting is rejected while slots are occupied. Two default VMs have 8 GiB of configured guest memory in total, plus host overhead.
 
-The [live smoke tests](validation/harbor-stress-2026-09-27.md) passed tiny writing and SVG tasks with `cpus: 1` and `memoryMb: 2048`, and a small Three.js scene with the defaults. These are starting points for similar tasks, not capacity guarantees. Increasing concurrency to 10 configures 40 GiB of guest memory at the default size, or 20 GiB at 2048 MiB. Allow room for macOS, other apps, and VM overhead, and measure the actual workload before increasing concurrency. Crucible does not automatically choose resources based on the task.
+For small tasks, `cpus: 1` and `memoryMb: 2048` may suffice. Increasing concurrency to 10 configures 40 GiB of guest memory at the default size, or 20 GiB at 2048 MiB. Allow room for macOS, other apps, and VM overhead, and measure the actual workload before increasing concurrency. Crucible does not automatically choose resources based on the task.
 
 ## Isolation and credentials
 

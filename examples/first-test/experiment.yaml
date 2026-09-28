@@ -1,27 +1,28 @@
-# A first test: does higher effort draw a better icon?
 # Run it with: crucible run examples/first-test/experiment.yaml
-name: First test, low vs high effort on an SVG icon
+name: Pelican bicycle SVG — Sonnet low vs Sonnet high vs Opus low
 
 arms:
-  - label: low
-    producer: {effort: low}
-  - label: high
-    producer: {effort: high}
+  - label: sonnet-low
+    producer: {model: claude-sonnet-5, effort: low}
+  - label: sonnet-high
+    producer: {model: claude-sonnet-5, effort: high}
+  - label: opus-low
+    producer: {model: claude-opus-5-5, effort: low}
 
 source:
   path: ./project
   include: [README.md]
 
-task: Draw a simple coffee cup icon as a single standalone SVG file, coffee-cup.svg. Follow README.md.
+task: Make me an SVG of a pelican riding a bicycle.
 
 producer:
-  agent: claude   # or codex, or cursor
-  timeout: 20m
+  agent: claude
 
 skills:
-  environment: clean   # no skills: the arms differ only in effort
+  environment: clean
 
 judge:
   agent: claude
-  timeout: 20m
+  model: claude-opus-5-5
+  effort: high
   rubric: ./rubric.md

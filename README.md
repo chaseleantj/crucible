@@ -9,7 +9,7 @@ Crucible lets your coding agent run blinded A/B tests on your own tasks. Ask it 
 
 Each variation, called an **arm**, works on a separate copy of your project. An independent judge scores anonymous outputs against your rubric before Crucible reveals which arm made each one. You can also skip the judge and inspect the results yourself.
 
-![The Crucible dashboard comparing slide decks made by Claude Code, Codex, and Cursor, with the judge's scores below](docs/dashboard.png)
+![The full Crucible comparison of two pelican-on-a-bicycle SVGs, including both images, scores, judge reasoning, and time and token usage](docs/dashboard.png)
 
 ## Ask your agent
 
@@ -23,7 +23,7 @@ Give your agent the [Crucible skill](skills/crucible/SKILL.md), then describe wh
 
 Your agent writes the experiment and scoring rubric, runs Crucible, checks progress and failures, and brings back the report. The agents being tested receive separate copies of the project and assigned context. A separate judge scores the outputs without seeing their arm labels. You can ask your agent to open the dashboard at any point to inspect the work yourself.
 
-For a first run, ask it to use `examples/first-test/experiment.yaml`, a small coffee-cup SVG test. One run is only one sample; ask for repeated runs when the decision matters.
+For a first run, ask it to use `examples/first-test/experiment.yaml`. It compares a pelican-on-a-bicycle SVG from Sonnet at low and high effort and Opus at low effort. One run is only one sample; ask for repeated runs when the decision matters.
 
 ## What you can test
 
@@ -120,7 +120,7 @@ For a custom test, run `crucible init my-test.yaml`, edit the experiment, and wr
 | Resources per VM | 2 CPUs, 4 GiB RAM |
 | Agent timeouts | 120 minutes per producer; 30 minutes for the judge |
 
-A ten-arm test queues the remaining arms without starting extra VMs. Set resources in the experiment YAML; for tiny writing or SVG tasks, this configuration passed our [live smoke tests](docs/validation/harbor-stress-2026-09-27.md):
+A ten-arm test queues the remaining arms without starting extra VMs. For tiny writing or SVG tasks, you can set smaller VM resources in the experiment YAML:
 
 ```yaml
 runtime:
