@@ -52,7 +52,7 @@ CRUCIBLE_CONFIG=/dev/null node --test dist/test/adapters.test.js
 npm run dev:ui       # the dashboard with hot reload, against `crucible ui` on CRUCIBLE_UI_PORT (default 8300)
 ```
 
-Run `crucible ui` in another terminal so the dev server has data to show. `ui/DESIGN.md` describes the dashboard's pages, states, and design decisions.
+Run `crucible ui` in another terminal so the dev server has data to show.
 
 ## Pull requests
 

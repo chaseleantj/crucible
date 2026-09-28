@@ -45,7 +45,7 @@ fi
 # The dashboard is built the same way, and only when it is about to be served.
 UI="$TOOL_DIR/dist/ui/index.html"
 if [ -n "$SOURCE_CHECKOUT" ] && [ "${1:-}" = ui ]; then
-  stale=$(find "$TOOL_DIR/ui" -type f -not -name DESIGN.md -newer "$UI" 2>/dev/null | head -n 1)
+  stale=$(find "$TOOL_DIR/ui" -type f -newer "$UI" 2>/dev/null | head -n 1)
   if [ ! -f "$UI" ] || [ -n "$stale" ]; then
     if ! (cd "$TOOL_DIR" && npm run build:ui --silent >&2); then
       echo "crucible: dashboard build failed; run npm ci && npm run build in $TOOL_DIR" >&2
