@@ -35,7 +35,7 @@ test("the theme follows the system until chosen, and a chosen theme is painted f
   assert.equal(await theme(), "dark");
 });
 
-test("primary actions share ink styling and keyboard focus is visible and neutral", { skip: !ready, timeout: TEST_MS }, async (t) => {
+test("run actions are one quiet icon treatment with tooltips, and keyboard focus is visible and neutral", { skip: !ready, timeout: TEST_MS }, async (t) => {
   const { url } = await fixture(t);
   for (const colorScheme of ["light", "dark"] as const) {
     const page = await newPage(t, { colorScheme });
@@ -45,20 +45,16 @@ test("primary actions share ink styling and keyboard focus is visible and neutra
     await report.waitFor();
     const style = (element: Element) => {
       const css = getComputedStyle(element);
-      return { background: css.backgroundColor, color: css.color };
+      return { background: css.backgroundColor, color: css.color, border: css.borderColor, tip: element.getAttribute("data-tip") };
     };
-    const primary = await report.evaluate(style);
-    const chosen = await page.locator(".segmented button[aria-pressed=true]").first().evaluate(style);
-    const ink = await page.evaluate(() => {
-      const probe = document.body.appendChild(document.createElement("i"));
-      probe.style.color = "var(--ink)";
-      const color = getComputedStyle(probe).color;
-      probe.remove();
-      return color;
-    });
-    assert.equal(primary.background, ink, colorScheme);
-    assert.equal(primary.background, chosen.background, colorScheme);
-    assert.equal(primary.color, chosen.color, colorScheme);
+    const actions = [report, page.getByRole("button", { name: "Show in Finder" }), page.getByRole("button", { name: /^Delete/ }).first()];
+    const looks = await Promise.all(actions.map((action) => action.evaluate(style)));
+    for (const look of looks) {
+      assert.ok(look.tip, `${colorScheme}: every icon action names itself on hover`);
+      assert.equal(look.background, looks[0]!.background, colorScheme);
+      assert.equal(look.color, looks[0]!.color, colorScheme);
+      assert.equal(look.border, looks[0]!.border, colorScheme);
+    }
 
     // A click shows no ring; the keyboard does, in a neutral tone.
     await page.goto(url);

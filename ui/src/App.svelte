@@ -8,6 +8,7 @@
   import { runTone } from "./lib/runs";
   import { type ThemeChoice, chooseTheme, theme } from "./lib/theme.svelte";
   import Home from "./components/Home.svelte";
+  import Icon, { type IconName } from "./components/Icon.svelte";
   import Menu from "./components/Menu.svelte";
   import MenuChoice from "./components/MenuChoice.svelte";
   import QuestionView from "./components/QuestionView.svelte";
@@ -45,22 +46,18 @@
     }
   }
 
-  const THEMES: { choice: ThemeChoice; label: string; icon: string }[] = [
-    { choice: "system", label: "System", icon: "M8 2.5a5.5 5.5 0 1 0 0 11Z M8 2.5a5.5 5.5 0 1 1 0 11" },
-    { choice: "light", label: "Light", icon: "M8 5.25a2.75 2.75 0 1 0 0 5.5 2.75 2.75 0 1 0 0-5.5Z M8 1.5v1.5 M8 13v1.5 M1.5 8H3 M13 8h1.5 M3.4 3.4l1.06 1.06 M11.54 11.54l1.06 1.06 M3.4 12.6l1.06-1.06 M11.54 4.46l1.06-1.06" },
-    { choice: "dark", label: "Dark", icon: "M13.5 9.6A5.5 5.5 0 0 1 6.4 2.5a5.5 5.5 0 1 0 7.1 7.1Z" },
+  const THEMES: { choice: ThemeChoice; label: string; icon: IconName }[] = [
+    { choice: "system", label: "System", icon: "theme-system" },
+    { choice: "light", label: "Light", icon: "theme-light" },
+    { choice: "dark", label: "Dark", icon: "theme-dark" },
   ];
   const currentTheme = $derived(THEMES.find(({ choice }) => choice === theme.choice)!);
 </script>
 
-{#snippet themeIcon(icon: string)}
-  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d={icon} /></svg>
-{/snippet}
-
 <svelte:window onkeydown={onKey} />
 
 <header class="topbar">
-  <div class="topbar-inner">
+  <div class="column topbar-inner tips-end">
     <a class="wordmark t-heading" href={listHref()}>
       <!-- The 16 cut, brand/logo/mark-16.svg, drawn in the theme's tones. -->
       <svg class="mark" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
@@ -77,17 +74,17 @@
       <span class="t-meta stale" role="status">Last updated {stamp(new Date(data.updatedAt).toISOString())}</span>
     {/if}
     {#if running.length > 0}
-      <a class="pill t-meta" href={listHref()} aria-label={runningLabel} title={runningLabel} onclick={() => (home.showRunning = true)}>
+      <a class="btn" href={listHref()} aria-label={runningLabel} data-tip={runningLabel} onclick={() => (home.showRunning = true)}>
         <span class="dot tone-{runningTone}" class:pulse={runningTone === "ok"} aria-hidden="true"></span>
         {running.length} running
       </a>
     {/if}
-    <button class="btn square quiet keys" onclick={() => (shortcuts = true)} aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)" aria-keyshortcuts="?">?</button>
-    <Menu label="Theme" title="Theme: {currentTheme.label}" buttonClass="btn square quiet" align="end">
-      {#snippet button()}{@render themeIcon(currentTheme.icon)}{/snippet}
+    <button class="btn square quiet" onclick={() => (shortcuts = true)} aria-label="Keyboard shortcuts" data-tip="Keyboard shortcuts (?)" aria-keyshortcuts="?"><Icon name="keyboard" /></button>
+    <Menu label="Theme" tip="Theme: {currentTheme.label}" buttonClass="btn square quiet flush-end" align="end">
+      {#snippet button()}<Icon name={currentTheme.icon} />{/snippet}
       {#snippet children(close)}
         {#each THEMES as { choice, label, icon } (choice)}
-          <MenuChoice checked={theme.choice === choice} onchoose={() => { chooseTheme(choice); close(); }}>{@render themeIcon(icon)} {label}</MenuChoice>
+          <MenuChoice checked={theme.choice === choice} onchoose={() => { chooseTheme(choice); close(); }}><Icon name={icon} /> {label}</MenuChoice>
         {/each}
       {/snippet}
     </Menu>
@@ -97,7 +94,7 @@
 {#if shortcuts}<Shortcuts onClose={() => (shortcuts = false)} />{/if}
 
 {#if data.error && snapshot}
-  <div class="banner-row">
+  <div class="column banner-row">
     <div class="banner" role="alert">
       <div class="banner-text">
         <p class="t-body">{data.error.message} The results below are from {data.updatedAt ? stamp(new Date(data.updatedAt).toISOString()) : "the last load"}.</p>
@@ -118,23 +115,23 @@
   {/key}
 {:else if data.error}
   <main class="page">
-    <section class="failed" role="alert" aria-labelledby="failed-title">
+    <section class="state-page" role="alert" aria-labelledby="failed-title">
       <h1 id="failed-title" class="t-page">Results didn't load</h1>
       <p class="t-body">{data.error.message}</p>
-      <p class="t-body hint">{data.error.hint}</p>
+      <p class="t-body lede">{data.error.hint}</p>
       <code class="command">{data.error.command}</code>
       <div><button class="btn" onclick={refresh}>Retry</button></div>
     </section>
   </main>
 {:else if slow}
   <main class="page" aria-busy="true" aria-label="Loading results">
-    <div class="skeleton" style="height: 20px; width: 120px; margin-top: var(--s-5)"></div>
-    <div class="skeleton" style="height: var(--control); width: 100%; margin: var(--s-4) 0 var(--s-2)"></div>
+    <div class="skeleton title"></div>
+    <div class="skeleton bar"></div>
     {#each { length: 12 } as _, i (i)}
       <div class="skeleton-row">
-        <div class="skeleton" style="width: 40px; height: 25px"></div>
-        <div class="skeleton" style="height: 12px; flex: 1; max-width: 40%"></div>
-        <div class="skeleton" style="height: 12px; width: 120px; margin-left: auto"></div>
+        <div class="skeleton thumb"></div>
+        <div class="skeleton line wide"></div>
+        <div class="skeleton line push"></div>
       </div>
     {/each}
   </main>
@@ -148,51 +145,19 @@
     background: var(--bg);
     border-bottom: 1px solid var(--hairline);
   }
-  .topbar-inner {
-    display: flex;
-    align-items: center;
-    gap: var(--s-2);
-    max-width: var(--content);
-    height: var(--topbar);
-    margin: 0 auto;
-    padding: 0 var(--s-5);
-  }
+  .topbar-inner { display: flex; align-items: center; gap: var(--s-2); height: var(--topbar); }
   @media (max-width: 640px) {
-    .topbar-inner { padding: 0 var(--s-4); }
     .stale { display: none; }
   }
-  .wordmark {
-    display: flex;
-    align-items: center;
-    gap: var(--s-2);
-    letter-spacing: -0.01em;
-  }
+  .wordmark { display: flex; align-items: center; gap: var(--s-2); }
   /* 1px low, as on the brand sheet, so it sits with the lowercase word. */
   .mark { flex: none; position: relative; top: 1px; }
   .mark .rim { fill: var(--mark-rim); }
   .mark .lip { fill: var(--mark-lip); }
   .mark .inner { fill: var(--mark-inner); }
   .mark .melt { fill: var(--mark-melt); }
-  .spacer { flex: 1; }
   .stale { margin-right: var(--s-2); }
-  .pill {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--s-2);
-    height: var(--control);
-    padding: 0 var(--s-3);
-    border: 1px solid var(--control-border);
-    border-radius: var(--radius-control);
-    color: var(--ink);
-    white-space: nowrap;
-    transition: background var(--speed) var(--ease), border-color var(--speed) var(--ease);
-  }
-  .pill:hover { background: var(--surface-hover); border-color: var(--muted); }
-  .keys { font: 600 14px/1 var(--font); }
-  .banner-row { max-width: var(--content); margin: var(--s-4) auto 0; padding: 0 var(--s-5); }
-  @media (max-width: 640px) {
-    .banner-row { padding: 0 var(--s-4); }
-  }
+  .banner-row { margin-top: var(--s-4); }
   .banner {
     display: flex;
     align-items: center;
@@ -203,15 +168,7 @@
     background: var(--surface);
   }
   .banner-text { flex: 1; display: grid; gap: var(--s-1); min-width: 0; }
-  .banner code, .command { color: var(--ink); user-select: all; }
-  .failed { display: grid; gap: var(--s-3); justify-items: start; max-width: 620px; padding: var(--s-8) 0 var(--s-6); }
-  .failed .hint { color: var(--muted); margin-top: var(--s-2); }
-  .command {
-    padding: var(--s-2) var(--s-3);
-    border: 1px solid var(--hairline-strong);
-    border-radius: var(--radius-small);
-    background: var(--surface);
-  }
+  .banner code { color: var(--ink); user-select: all; }
   .skeleton-row {
     display: flex;
     align-items: center;
@@ -219,4 +176,11 @@
     height: var(--row);
     border-bottom: 1px solid var(--hairline);
   }
+  /* Each placeholder takes the size of what it stands for. */
+  .title { width: 120px; height: var(--chip); margin-top: var(--s-5); }
+  .bar { height: var(--control); margin: var(--s-4) 0 var(--s-2); }
+  .thumb { width: 40px; height: 25px; }
+  .line { height: var(--s-3); }
+  .line.wide { flex: 1; max-width: 40%; }
+  .line.push { width: 120px; }
 </style>

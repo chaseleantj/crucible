@@ -4,6 +4,7 @@
   import { questionHref } from "../lib/route.svelte";
   import { type Row, type Sort, type SortKey, judgeShort } from "../lib/results";
   import { NOT_JUDGED } from "../lib/verdict";
+  import Icon from "./Icon.svelte";
 
   let { rows, sort, onsort, widest, onopen, selected, selecting, onpick, onpickpage }: {
     rows: Row[];
@@ -66,7 +67,7 @@
     key && sort.key === key ? (sort.descending ? "descending" : "ascending") : undefined;
 </script>
 
-<table bind:this={table} class="results" class:selecting aria-label="Results">
+<table bind:this={table} class="results linked inset" class:selecting aria-label="Results">
   <thead>
     <tr>
       <th scope="col" class="c-pick">
@@ -83,9 +84,9 @@
         <th scope="col" class={column.className} aria-sort={ariaSort(column.key)}>
           {#if column.key}
             {@const key = column.key}
-            <button class="sort" class:active={sort.key === key} onclick={() => onsort(key)}>
+            <button class="text-button sort" class:active={sort.key === key} onclick={() => onsort(key)}>
               {column.label}
-              <svg class="arrow" class:up={sort.key === key && !sort.descending} width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3v10M3.5 8.5 8 13l4.5-4.5" /></svg>
+              <Icon name="arrow-down" size={12} class={sort.key === key && !sort.descending ? "arrow up" : "arrow"} />
             </button>
           {:else}
             {column.label}
@@ -138,7 +139,7 @@
     {@render pick(row, index)}
     <td class="c-question">
       <a class="row-link" href={questionHref(question.key)} data-key={row.key} onkeydown={(event) => event.key === "Enter" && onopen(row.key)}>
-        <span class="title">{row.title}</span>
+        <span class="title t-body">{row.title}</span>
       </a>
       <span class="meta t-meta">
         <span class="m-verdict">{verdict ?? NOT_JUDGED}{question.split ? ", split" : tally ? `, ${tally}` : ""}</span>
@@ -165,7 +166,7 @@
     </td>
     <td class="c-arms num">{question.arms.length}</td>
     <td class="c-runs num">{question.runs.length}</td>
-    <td class="c-judge"><span class="clip">{judge ?? "—"}</span></td>
+    <td class="c-judge" class:dim={!judge}><span class="clip">{judge ?? "—"}</span></td>
     <td class="c-date num">{date(row.when)}</td>
   </tr>
 {/snippet}
@@ -176,7 +177,7 @@
     {@render pick(row, index)}
     <td class="c-question">
       <a class="row-link" href={target ? fileUrl(target) : undefined} target="_blank" rel="noopener" data-key={row.key}>
-        <span class="title">{row.title}</span>
+        <span class="title t-body">{row.title}</span>
       </a>
       <span class="meta t-meta"><span class="m-verdict">Report only</span></span>
     </td>
@@ -191,10 +192,8 @@
 
 <style>
   .results { table-layout: fixed; border-top: 1px solid var(--hairline); }
-  th { height: 36px; padding-top: 0; padding-bottom: 0; vertical-align: middle; border-bottom-color: var(--hairline-strong); }
-  td { height: var(--row); padding-top: var(--s-1); padding-bottom: var(--s-1); vertical-align: middle; }
-  th:first-child, td:first-child { padding-left: var(--s-2); }
-  th:last-child, td:last-child { padding-right: var(--s-2); }
+  th { height: var(--row-compact); padding-block: 0; vertical-align: middle; }
+  td { height: var(--row); padding-block: var(--s-1); vertical-align: middle; }
 
   /* The box and the capture share the first column: the capture at rest,
      the box under the pointer, on the keyboard's row, and whenever anything
@@ -204,12 +203,11 @@
   td.c-pick { position: relative; z-index: 1; padding-top: 0; padding-bottom: 0; }
   .c-pick label { display: grid; place-items: center start; height: 100%; min-height: var(--row); cursor: pointer; }
   .c-pick label > * { grid-area: 1 / 1; }
-  th.c-pick input { margin-left: 12px; vertical-align: middle; }
+  th.c-pick input { margin-left: var(--s-3); vertical-align: middle; }
   td.c-pick input { justify-self: center; }
   td.c-pick input { opacity: 0; }
   tbody tr:hover td.c-pick input, tbody tr:focus-within td.c-pick input, .selecting td.c-pick input, tr.checked td.c-pick input { opacity: 1; }
   tbody tr:hover .thumb, tbody tr:focus-within .thumb, .selecting .thumb, tr.checked .thumb { visibility: hidden; }
-  tbody tr.checked td { background: var(--surface-selected); }
 
   .c-verdict { width: 200px; }
   .c-margin { width: 132px; }
@@ -217,28 +215,22 @@
   .c-judge { width: 136px; }
   .c-date { width: 76px; }
 
-  .sort { display: inline-flex; align-items: center; gap: var(--s-1); color: inherit; border-radius: 4px; }
-  .sort:hover, .sort.active { color: var(--ink); }
-  .arrow { opacity: 0; transition: transform var(--speed) var(--ease); }
-  .sort:hover .arrow { opacity: 0.5; }
-  .sort.active .arrow { opacity: 1; }
-  .arrow.up { transform: rotate(180deg); }
+  .sort.active { color: var(--ink); }
+  .sort :global(.arrow) { opacity: 0; transition: transform var(--speed) var(--ease), opacity var(--speed) var(--ease); }
+  .sort:hover :global(.arrow) { opacity: 0.5; }
+  .sort.active :global(.arrow) { opacity: 1; }
+  .sort :global(.arrow.up) { transform: rotate(180deg); }
 
-  /* The whole row opens the question: the title's link covers it, so
-     nothing else in a row carries a tooltip or a control of its own. */
-  tbody tr { position: relative; scroll-margin: calc(var(--topbar) + 96px) 0 var(--s-4); }
-  tbody tr:hover td { background: var(--surface-hover); }
-  tbody tr:has(.row-link:focus-visible) td { background: var(--surface-selected); }
-  tbody tr:has(.row-link:focus-visible) td:first-child { box-shadow: inset 2px 0 0 var(--ink); }
-  .row-link { display: flex; align-items: center; gap: var(--s-3); min-width: 0; color: var(--ink); }
-  .row-link::after { content: ""; position: absolute; inset: 0; }
-  .row-link:focus-visible { outline: none; }
+  /* The whole row opens the question: the title's link covers it, and only
+     the pick box sits above it. The margin keeps a row clear of the pinned bar. */
+  tbody tr { scroll-margin: calc(var(--topbar) + 96px) 0 var(--s-4); }
+  .row-link { display: flex; align-items: center; gap: var(--s-3); min-width: 0; }
 
   .thumb {
     flex: none;
     width: 40px;
     height: 25px;
-    border-radius: 4px;
+    border-radius: var(--radius-inner);
     overflow: hidden;
     background: var(--surface);
     border: 1px solid var(--frame);
@@ -246,7 +238,6 @@
   .thumb img { width: 100%; height: 100%; object-fit: cover; object-position: top; }
   .title {
     min-width: 0;
-    font: var(--text-body);
     display: -webkit-box;
     -webkit-line-clamp: 2;
     line-clamp: 2;
@@ -274,7 +265,6 @@
     .c-verdict { width: 150px; }
     .c-margin { width: 100px; }
     .margin .meter { width: 40px; }
-    .c-judge { width: 140px; }
   }
   @media (max-width: 900px) {
     .c-arms, .c-runs, .c-judge { display: none; }

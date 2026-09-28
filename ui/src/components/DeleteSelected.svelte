@@ -95,7 +95,7 @@
 
 <dialog
   bind:this={dialog}
-  class="surface confirm bulk"
+  class="overlay dialog wide confirm"
   aria-labelledby="bulk-title"
   aria-describedby="bulk-what"
   oncancel={(event) => phase === "deleting" && event.preventDefault()}
@@ -112,10 +112,10 @@
 
   <ul class="items" aria-busy={phase === "checking"}>
     {#each phase === "result" ? refused : items as item (item.key)}
-      <li>
+      <li class="stack">
         <span class="title t-body">{item.title}</span>
         {#if item.error}
-          <span class="t-meta error">{item.error}</span>
+          <span class="t-meta tone-danger">{item.error}</span>
         {:else if item.takes || slow}
           <span class="t-meta">{takes(item)}</span>
         {/if}
@@ -123,7 +123,7 @@
     {/each}
   </ul>
 
-  {#if failure}<p class="t-body error" role="alert">{failure}</p>{/if}
+  {#if failure}<p class="t-body tone-danger" role="alert">{failure}</p>{/if}
   {#if phase === "confirm" && refused.length > 0}
     <p class="t-body" role="status">{refused.length === items.length ? "None of these can be deleted." : `${plural(refused.length, "result")} can't be deleted and will be kept.`}</p>
   {/if}
@@ -137,14 +137,13 @@
         class="btn btn-danger solid"
         onclick={confirm}
         disabled={phase !== "confirm" || ready.length === 0}
-        title={phase === "checking" ? "Checking what each would take" : phase === "confirm" && ready.length === 0 ? "Nothing selected can be deleted" : undefined}
+        data-tip={phase === "checking" ? "Checking what each would take" : phase === "confirm" && ready.length === 0 ? "Nothing selected can be deleted" : undefined}
       >{phase === "deleting" ? "Deleting…" : `Delete ${phase === "checking" || ready.length === items.length ? "" : `${ready.length} of `}${plural(items.length, "result")}`}</button>
     {/if}
   </div>
 </dialog>
 
 <style>
-  .bulk { width: min(520px, calc(100vw - 2 * var(--s-4))); }
   .items {
     display: grid;
     gap: var(--s-2);
@@ -155,6 +154,5 @@
     list-style: none;
     border-block: 1px solid var(--hairline);
   }
-  .items li { display: grid; gap: 2px; }
   .items .title { color: var(--ink); overflow-wrap: anywhere; }
 </style>

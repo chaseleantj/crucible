@@ -2,7 +2,7 @@
   let { archiveRoot, runsRoot }: { archiveRoot: string; runsRoot: string } = $props();
 </script>
 
-<section class="empty" aria-labelledby="empty-title">
+<section class="state-page" aria-labelledby="empty-title">
   <h1 id="empty-title" class="t-page">No tests yet</h1>
   <p class="t-body lede">
     Crucible gives the same task to two or more agent setups, then a blind judge scores what each one made.
@@ -29,9 +29,7 @@
 </section>
 
 <style>
-  .empty { max-width: 620px; padding: var(--s-8) 0 var(--s-6); }
-  .lede { margin-top: var(--s-3); color: var(--muted); }
-  .steps { list-style: none; margin-top: var(--s-6); display: grid; gap: var(--s-5); counter-reset: step; }
+  .steps { list-style: none; margin-top: var(--s-5); display: grid; gap: var(--s-5); counter-reset: step; }
   .steps li {
     display: grid;
     gap: var(--s-2);
@@ -39,30 +37,23 @@
     position: relative;
     counter-increment: step;
   }
+  /* The step's number, on a key's size and type. */
   .steps li::before {
     content: counter(step);
     position: absolute;
     left: 0;
     top: 0;
-    width: 22px;
-    height: 22px;
+    display: grid;
+    place-items: center;
+    width: var(--chip);
+    height: var(--chip);
     border-radius: 50%;
     border: 1px solid var(--hairline-strong);
+    font: var(--text-label);
     color: var(--muted);
-    font: 600 12px/20px var(--font);
-    text-align: center;
   }
-  .command {
-    justify-self: start;
-    padding: var(--s-2) var(--s-3);
-    border: 1px solid var(--hairline-strong);
-    border-radius: var(--radius-small);
-    background: var(--surface);
-    color: var(--ink);
-    user-select: all;
-  }
-  .roots { margin-top: var(--s-7); display: grid; gap: var(--s-1); }
+  .roots { margin-top: var(--s-6); display: grid; gap: var(--s-1); }
   .roots div { display: flex; gap: var(--s-3); flex-wrap: wrap; }
-  .roots dt { width: 104px; }
+  .roots dt { width: 112px; }
   .roots dd { color: var(--muted); overflow-wrap: anywhere; }
 </style>

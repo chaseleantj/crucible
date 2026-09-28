@@ -1,11 +1,12 @@
 <script lang="ts">
   import { fileUrl } from "../lib/api";
-    import { forPage } from "../lib/keys";
+  import { forPage } from "../lib/keys";
   import { onMount } from "svelte";
   import { leaveQuestion, viewerHref } from "../lib/route.svelte";
   import { type Device, capture, hasPhone, livePage, pageUrl, pagesOf } from "../lib/runs";
   import type { Experiment, JudgedRun } from "../lib/types";
   import { identity } from "../lib/verdict";
+  import Icon from "./Icon.svelte";
 
   // The arms side by side, one column each, on the same page: one control
   // above them steps every arm together while "Sync pages" is on, or each
@@ -140,47 +141,47 @@
 
 <svelte:window onkeydown={onKey} />
 
-<section class="compare" style="--arms: {labels.length}; --bar: {barHeight}px; --gap: {GAP}px" class:phone={device === "phone"} aria-label="Arms">
+<section class="compare" style="--arms: {labels.length}; --bar: {barHeight}px; --gap: {GAP}px; --peek: {PEEK}px" class:phone={device === "phone"} aria-label="Arms">
   <div class="controls" bind:offsetHeight={barHeight}>
-    <div class="group">
+    <div class="cluster">
       {#if mode === "live"}
         {#if deck && sync}
-          <button class="btn square" aria-label="Previous slide, in every arm" title="Previous slide (←)" onclick={() => turn("ArrowLeft")}>{@render chevron("left")}</button>
-          <button class="btn square" aria-label="Next slide, in every arm" title="Next slide (→)" onclick={() => turn("ArrowRight")}>{@render chevron("right")}</button>
+          <button class="btn square quiet" aria-label="Previous slide, in every arm" data-tip="Previous slide (←)" onclick={() => turn("ArrowLeft")}><Icon name="chevron-left" /></button>
+          <button class="btn square quiet" aria-label="Next slide, in every arm" data-tip="Next slide (→)" onclick={() => turn("ArrowRight")}><Icon name="chevron-right" /></button>
         {/if}
         {#if livePages}{@render pagePick()}{/if}
         {#if deck && syncable}{@render syncBox()}{/if}
       {:else if pages.length > 1}
         {#if sync}
-          <button class="btn square" aria-label="Previous page" title="Previous page (←)" aria-disabled={shared === 0} onclick={() => stepAll(-1)}>{@render chevron("left")}</button>
+          <button class="btn square" aria-label="Previous page" data-tip="Previous page (←)" aria-disabled={shared === 0} onclick={() => stepAll(-1)}><Icon name="chevron-left" /></button>
           {@render pagePick()}
-          <button class="btn square" aria-label="Next page" title="Next page (→)" aria-disabled={shared === pages.length - 1} onclick={() => stepAll(1)}>{@render chevron("right")}</button>
+          <button class="btn square" aria-label="Next page" data-tip="Next page (→)" aria-disabled={shared === pages.length - 1} onclick={() => stepAll(1)}><Icon name="chevron-right" /></button>
         {/if}
         {#if syncable}{@render syncBox()}{/if}
       {:else if pages.length === 1}
-        <span class="t-meta clip">{pages[0]}</span>
+        <span class="t-meta clip" title={pages[0]}>{pages[0]}</span>
       {/if}
     </div>
-    <div class="group">
+    <div class="cluster tips-end">
       {#if fits < labels.length}
         <span class="t-meta range">{fits === 1 ? `Arm ${first + 1}` : `Arms ${first + 1}–${Math.min(labels.length, first + fits)}`} of {labels.length}</span>
-        <button class="btn square" aria-label="Show earlier arms" aria-disabled={!more.left} onclick={() => scrollArms(-1)}>
-          {@render chevron("left")}
+        <button class="btn square quiet" aria-label="Show earlier arms" data-tip="Earlier arms" aria-disabled={!more.left} onclick={() => scrollArms(-1)}>
+          <Icon name="chevron-left" />
         </button>
-        <button class="btn square" aria-label="Show later arms" aria-disabled={!more.right} onclick={() => scrollArms(1)}>
-          {@render chevron("right")}
+        <button class="btn square quiet" aria-label="Show later arms" data-tip="Later arms" aria-disabled={!more.right} onclick={() => scrollArms(1)}>
+          <Icon name="chevron-right" />
         </button>
       {/if}
       {#if anyLive}
         <div class="segmented" role="group" aria-label="Show">
-          <button aria-pressed={mode === "captures"} onclick={() => (mode = "captures")}>Captures</button>
-          <button aria-pressed={mode === "live"} onclick={() => (mode = "live")}>Live</button>
+          <button aria-pressed={mode === "captures"} onclick={() => (mode = "captures")} aria-label="Captures" data-tip="Captures"><Icon name="image" /></button>
+          <button aria-pressed={mode === "live"} onclick={() => (mode = "live")} aria-label="Live page" data-tip="Live page"><Icon name="live" /></button>
         </div>
       {/if}
       {#if phone || mode === "live"}
-        <div class="segmented" role="group" aria-label="Width">
-          <button aria-pressed={device === "desktop"} onclick={() => (device = "desktop")}>Desktop</button>
-          <button aria-pressed={device === "phone"} onclick={() => (device = "phone")}>Phone</button>
+        <div class="segmented" role="group" aria-label="Frame width">
+          <button aria-pressed={device === "desktop"} onclick={() => (device = "desktop")} aria-label="Desktop" data-tip="Desktop"><Icon name="desktop" /></button>
+          <button aria-pressed={device === "phone"} onclick={() => (device = "phone")} aria-label="Phone" data-tip="Phone"><Icon name="phone" /></button>
         </div>
       {/if}
     </div>
@@ -220,7 +221,7 @@
               ></iframe>
             </div>
           {:else if mode === "live"}
-            <div class="shot none t-meta">{label} made no HTML page to run</div>
+            <div class="shot none t-meta">{label} made no HTML page to view live</div>
           {:else if image}
             <!-- A capture opens its page live when there is one; else the picture itself. -->
             <a
@@ -246,21 +247,21 @@
           <div class="foot t-meta">
             {#if stepper}
               <span class="own">
-                <button class="btn square small" aria-label="{label}: previous page" aria-disabled={index === 0} onclick={() => stepOne(label, -1)}>
-                  {@render chevron("left")}
+                <button class="btn square quiet tip-above" aria-label="{label}: previous page" data-tip="Previous page" aria-disabled={index === 0} onclick={() => stepOne(label, -1)}>
+                  <Icon name="chevron-left" />
                 </button>
-                <span class="num" title={pages[index]}>{index + 1} / {pages.length}</span>
-                <button class="btn square small" aria-label="{label}: next page" aria-disabled={index === pages.length - 1} onclick={() => stepOne(label, 1)}>
-                  {@render chevron("right")}
+                <span title={pages[index]}>{index + 1} / {pages.length}</span>
+                <button class="btn square quiet tip-above" aria-label="{label}: next page" data-tip="Next page" aria-disabled={index === pages.length - 1} onclick={() => stepOne(label, 1)}>
+                  <Icon name="chevron-right" />
                 </button>
               </span>
             {:else if producers}
               <span class="clip" title={identity(result.producers[label])}>{identity(result.producers[label])}</span>
             {/if}
             {#if mode === "live" && viewer}
-              <a class="link" href={viewer}>Full window</a>
+              <a class="btn square quiet push tip-above tips-end" href={viewer} aria-label="{label}: full window" data-tip="Full window"><Icon name="expand" /></a>
             {:else if !viewer && output}
-              <a class="link" href={fileUrl(output)} target="_blank" rel="noopener">Open output</a>
+              <a class="btn square quiet push tip-above tips-end" href={fileUrl(output)} target="_blank" rel="noopener" aria-label="{label}: open output" data-tip="Open output"><Icon name="external" /></a>
             {/if}
           </div>
           {/if}
@@ -280,14 +281,10 @@
 {/snippet}
 
 {#snippet syncBox()}
-  <label class="sync t-meta">
+  <label class="sync">
     <input type="checkbox" checked={sync} onchange={(event) => setSync(event.currentTarget.checked)} />
     Sync pages
   </label>
-{/snippet}
-
-{#snippet chevron(side: "left" | "right")}
-  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d={side === "left" ? "M10 3.5 5.5 8l4.5 4.5" : "M6 3.5 10.5 8 6 12.5"} /></svg>
 {/snippet}
 
 <!-- Each arm's name and the winner; the totals are the criteria table's last row. -->
@@ -313,10 +310,8 @@
     padding: var(--s-2) 0;
     background: var(--bg);
   }
-  .group { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2); min-width: 0; }
   .page-pick select { max-width: 360px; }
-  .sync { display: inline-flex; align-items: center; gap: var(--s-2); margin-left: var(--s-2); color: var(--ink); cursor: pointer; }
-
+  .sync { display: inline-flex; align-items: center; gap: var(--s-2); font: var(--text-meta); cursor: pointer; }
 
   .grid {
     display: grid;
@@ -336,13 +331,12 @@
   }
   .body { overflow-x: auto; padding-bottom: var(--s-2); scrollbar-width: thin; scroll-snap-type: x mandatory; }
   /* Columns hidden past an edge fade into the ground there. */
-  .fade-right { mask-image: linear-gradient(to right, #000 calc(100% - 40px), transparent); }
-  .fade-left { mask-image: linear-gradient(to left, #000 calc(100% - 24px), transparent); }
-  .fade-left.fade-right { mask-image: linear-gradient(to right, transparent, #000 24px, #000 calc(100% - 40px), transparent); }
+  .fade-right { mask-image: linear-gradient(to right, #000 calc(100% - var(--peek)), transparent); }
+  .fade-left { mask-image: linear-gradient(to left, #000 calc(100% - var(--s-5)), transparent); }
+  .fade-left.fade-right { mask-image: linear-gradient(to right, transparent, #000 var(--s-5), #000 calc(100% - var(--peek)), transparent); }
   .range { white-space: nowrap; margin-right: var(--s-1); }
 
-  .head { display: grid; gap: var(--s-2); min-width: 0; padding-top: var(--s-1); }
-  .name { display: flex; align-items: center; gap: var(--s-2); min-width: 0; height: 24px; }
+  .name { display: flex; align-items: center; gap: var(--s-2); min-width: 0; height: var(--s-5); margin-top: var(--s-1); }
 
   /* Positioned, so its screen-reader caption stays inside the scroller rather than widen the page. */
   .arm { position: relative; min-width: 0; scroll-snap-align: start; }
@@ -360,14 +354,10 @@
   a.shot:hover { border-color: var(--faint); }
   .shot img { width: 100%; height: 100%; object-fit: cover; object-position: top; }
   .shot.none { display: grid; place-items: center; text-align: center; padding: var(--s-4); }
-  /* A page that paints no ground of its own expects the browser's white. */
-  .live iframe { position: absolute; top: 0; left: 0; border: none; background: #fff; transform-origin: 0 0; }
+  .live iframe { position: absolute; top: 0; left: 0; border: none; background: var(--page-ground); transform-origin: 0 0; }
 
-  .foot { display: flex; gap: var(--s-3); min-height: 32px; align-items: center; margin-top: var(--s-1); }
-  .own { display: inline-flex; align-items: center; gap: var(--s-2); }
-  .btn.small { width: 24px; height: 24px; }
-  .link { margin-left: auto; color: var(--ink); white-space: nowrap; }
-  .link:hover { text-decoration: underline; text-underline-offset: 3px; }
+  .foot { display: flex; gap: var(--s-3); min-height: var(--control); align-items: center; margin-top: var(--s-1); }
+  .own { display: inline-flex; align-items: center; gap: var(--s-1); }
 
   @media (max-width: 640px) {
     .page-pick select { max-width: calc(100vw - 2 * var(--s-4) - 2 * var(--control) - 2 * var(--s-2)); }
