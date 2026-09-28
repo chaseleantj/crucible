@@ -1,27 +1,16 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { type IncomingHttpHeaders, request as httpRequest } from "node:http";
 import { FILE_POLICY, containedPath, createUiServer, listenUi } from "../src/ui.js";
 
-function result(runId: string) {
-  return {
-    runId, name: `Question ${runId}`, series: null, task: "Write a page.", reportedAt: "2026-01-01T00:00:00Z", environment: "clean",
-    arms: [{ label: "a", candidate: null, replaces: null }, { label: "b", candidate: null, replaces: null }],
-    producers: { a: { agent: "claude", model: null, effort: null }, b: { agent: "claude", model: null, effort: null } },
-    cost: {}, warnings: [], shots: null,
-    judgeAgent: { agent: "claude", model: null, effort: null }, winner: "a", confidence: 0.7, totals: { a: 8, b: 6 }, margin: 2,
-    scores: [{ criterion: "clarity", weight: 1, scores: { a: 8, b: 6 } }],
-    referenceGuess: { arm: null, confidence: 0.5, correct: null }, summary: "A was clearer.",
-  };
-}
+import { tempDirectory } from "./support/files.js";
+import { judgedResult } from "./support/results.js";
 
 async function fixture(t: test.TestContext) {
-  const base = await mkdtemp(join(tmpdir(), "crucible-ui-"));
-  t.after(() => rm(base, { recursive: true, force: true }));
+  const base = await tempDirectory(t, "crucible-ui-");
   const archiveRoot = join(base, "archive");
   const runsRoot = join(base, "runs");
   const assetsDir = join(base, "assets");
@@ -29,7 +18,7 @@ async function fixture(t: test.TestContext) {
   await mkdir(join(entry, "outputs", "a"), { recursive: true });
   await mkdir(runsRoot, { recursive: true });
   await mkdir(assetsDir, { recursive: true });
-  await writeFile(join(entry, "result.json"), JSON.stringify(result("ab-00000001")));
+  await writeFile(join(entry, "result.json"), JSON.stringify(judgedResult({ name: "Question ab-00000001" })));
   await writeFile(join(entry, "report.html"), "<p>report</p>");
   await writeFile(join(entry, "outputs", "a", "index.html"), "<p>a</p>");
   await writeFile(join(entry, "outputs", "a", "answer.md"), "# Answer");
@@ -110,8 +99,14 @@ test("refuses files outside the roots, through links, or via encoded traversal",
 });
 
 test("containedPath accepts only real paths inside a root", async (t) => {
-  const { base, archiveRoot, runsRoot, entry } = await fixture(t);
-  const roots = { archiveRoot, runsRoot };
+  const base = await tempDirectory(t, "crucible-contained-");
+  const archiveRoot = join(base, "archive");
+  const roots = { archiveRoot, runsRoot: join(base, "runs") };
+  const entry = join(archiveRoot, "first");
+  await mkdir(entry, { recursive: true });
+  await writeFile(join(entry, "report.html"), "<p>report</p>");
+  await writeFile(join(base, "secret.txt"), "secret");
+  await symlink(join(base, "secret.txt"), join(entry, "leak.txt"));
   assert.equal(containedPath(roots, join(entry, "report.html")), join(entry, "report.html"));
   assert.equal(containedPath(roots, archiveRoot), null);
   assert.equal(containedPath(roots, join(archiveRoot, "..", "secret.txt")), null);

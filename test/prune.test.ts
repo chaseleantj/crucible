@@ -1,15 +1,15 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { pathsConfig } from "../src/paths.js";
 import { pruneCandidates, pruneRun } from "../src/prune.js";
 import type { PathsConfig, RunState } from "../src/types.js";
+import { tempDirectory } from "./support/files.js";
 
-async function roots(): Promise<PathsConfig> {
-  const base = await mkdtemp(join(tmpdir(), "crucible-prune-"));
+async function roots(t: test.TestContext): Promise<PathsConfig> {
+  const base = await tempDirectory(t, "crucible-prune-");
   return pathsConfig({
     CRUCIBLE_RUNS_ROOT: join(base, "runs"),
     CRUCIBLE_TEMP_ROOT: join(base, "temp"),
@@ -40,8 +40,8 @@ async function writeRun(paths: PathsConfig, { runId, state, ageDays = 0, archive
   await writeFile(join(entry, "result.json"), JSON.stringify({ runId }));
 }
 
-test("prune takes archived finished runs and leaves everything else alone", async () => {
-  const paths = await roots();
+test("prune takes archived finished runs and leaves everything else alone", async (t) => {
+  const paths = await roots(t);
   await writeRun(paths, { runId: "ab-00000001", state: "reported", archived: true });
   await writeRun(paths, { runId: "ab-00000002", state: "reported" });
   await writeRun(paths, { runId: "ab-00000003", state: "running", archived: true });
@@ -67,8 +67,8 @@ test("prune takes archived finished runs and leaves everything else alone", asyn
   }
 });
 
-test("--older-than also takes finished unarchived runs past the cutoff", async () => {
-  const paths = await roots();
+test("--older-than also takes finished unarchived runs past the cutoff", async (t) => {
+  const paths = await roots(t);
   await writeRun(paths, { runId: "ab-00000005", state: "judged", ageDays: 40 });
   await writeRun(paths, { runId: "ab-00000006", state: "reported", ageDays: 3 });
   await writeRun(paths, { runId: "ab-00000007", state: "failed", ageDays: 40 });
@@ -76,8 +76,8 @@ test("--older-than also takes finished unarchived runs past the cutoff", async (
   assert.deepEqual((await pruneCandidates(30, paths)).map((candidate) => candidate.runId), ["ab-00000005"]);
 });
 
-test("prune leaves a finished run alone while its judge is at work again", async () => {
-  const paths = await roots();
+test("prune leaves a finished run alone while its judge is at work again", async (t) => {
+  const paths = await roots(t);
   await writeRun(paths, { runId: "ab-00000008", state: "judged", archived: true });
   const stateFile = join(paths.runRoot, "ab-00000008", "state.json");
   const view = JSON.parse(await readFile(stateFile, "utf8"));

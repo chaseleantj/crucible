@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { tempDirectory } from "./support/files.js";
 
 const CLI = fileURLToPath(new URL("../src/cli.js", import.meta.url));
 const execFileAsync = promisify(execFile);
@@ -21,8 +21,7 @@ async function crucible(args: string[], env: NodeJS.ProcessEnv, cwd: string) {
 }
 
 test("init writes the starter experiment once and refuses to overwrite it", async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "crucible-cli-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await tempDirectory(t, "crucible-cli-");
   const first = await crucible(["init"], {}, root);
   assert.equal(first.code, 0, first.stderr);
   assert.match(await readFile(join(root, "experiment.yaml"), "utf8"), /^name: /);
@@ -32,8 +31,7 @@ test("init writes the starter experiment once and refuses to overwrite it", asyn
 });
 
 test("check fails on a broken entry, and config and list read the configured roots", async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "crucible-cli-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await tempDirectory(t, "crucible-cli-");
   await mkdir(join(root, "archive", "broken"), { recursive: true });
   await writeFile(join(root, "archive", "broken", "README.md"), "A note.\n");
   await writeFile(join(root, "config.yaml"), `archiveRoot: ./archive\nrunsRoot: ./runs\n`);

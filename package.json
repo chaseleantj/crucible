@@ -55,6 +55,7 @@
     "build:ui": "svelte-check --workspace ui --tsconfig ./tsconfig.json && vite build --config ui/vite.config.ts",
     "check": "tsc --noEmit",
     "test": "npm run build && CRUCIBLE_CONFIG=/dev/null node --test dist/test/*.test.js",
+    "test:codex": "npm run build:cli && CRUCIBLE_CONFIG=/dev/null node --test dist/test/integration/codex-mcp.test.js",
     "dev:ui": "vite --config ui/vite.config.ts",
     "setup:browsers": "playwright install chromium",
     "setup:runtime": "bash runtime/setup.sh",

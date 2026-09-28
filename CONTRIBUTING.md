@@ -8,19 +8,42 @@ Crucible runs agents in Linux guests through Harbor and Apple Container on Apple
 npm ci
 npm run check        # type-check the CLI and the tests
 npm run build        # the CLI to dist/src, the dashboard to dist/ui
-npm test             # rebuilds the CLI and the dashboard, then runs every test in test/
+npm test             # rebuilds the CLI and the dashboard, then runs the default TypeScript suite
 ```
 
 The tests do not start agent sessions, read your keychain, or read your `~/.config/crucible/config.yaml`. A few skip themselves when something is missing:
 
 - the capture tests and the dashboard tests, which drive the built dashboard in a browser, skip when Playwright's Chromium is not installed (`npm run setup:browsers`; CI runs it);
-- the Codex MCP test skips when the `codex` CLI is not on your PATH;
 - tests that exercise a real Harbor guest require `npm run setup:runtime`; ordinary unit tests use fake transports and make no model calls.
 
-After runtime setup, run the Python worker and relay tests with the installed environment. The relay test needs local loopback sockets:
+The optional Codex compatibility test lives in `test/integration/`. It checks MCP configuration parsing against the `codex` executable on your PATH without starting an agent session. Run it when changing the Codex adapter or checking a new CLI version:
 
 ```sh
-~/.local/share/crucible/harbor/venv/bin/python -B -m unittest discover -s runtime -p 'test_*.py'
+npm run test:codex
+```
+
+This command requires an installed Codex CLI and fails if it is missing. It is separate from `npm test` and CI so the default suite does not depend on a local agent installation.
+
+Run the Python worker and relay tests with Python 3.12+. They use the standard library and fake guest transports, so they need no runtime installation. The relay test needs local loopback sockets:
+
+```sh
+python3 -B -m unittest discover -s runtime -p 'test_*.py'
+```
+
+CI runs the TypeScript and Python suites, including browser tests.
+
+## Where tests belong
+
+Keep tests beside others for the behavior they protect: configuration in `config.test.ts`, frozen context in `prepare.test.ts`, adapter preparation in `adapters.test.ts`, and run lifecycle in `runner.test.ts`. Archive, reporting, scoring, capture, and state each have their own suites.
+
+The dashboard tests are split into results/navigation (`dashboard.test.ts`), viewer/security (`dashboard-viewer.test.ts`), and appearance (`dashboard-appearance.test.ts`). `ui.test.ts` tests the HTTP server; `store.test.ts` tests archive discovery and deletion.
+
+`test/support/` holds shared fixtures. Use `tempDirectory(t)` and `setEnvironment(t, values)` so cleanup runs even when assertions fail. Register server and broker cleanup as soon as they are created. Keep scenario-specific inputs and expected values in the test; browser tests should wait for observable state and fix the clock when asserting dates.
+
+To run one suite after building:
+
+```sh
+CRUCIBLE_CONFIG=/dev/null node --test dist/test/adapters.test.js
 ```
 
 ## Working on the dashboard

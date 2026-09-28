@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import test from "node:test";
 import { HarborSession } from "../src/harbor.js";
+import { loadConfig, runtimeFor } from "../src/config.js";
+import { prepareRun } from "../src/prepare.js";
+import { tempDirectory } from "./support/files.js";
 
 test("Harbor drains asynchronous native-event handlers before command completion", async () => {
   const child = spawn(process.execPath, ["-e", `
@@ -39,4 +44,27 @@ test("Harbor abort terminates the worker and rejects the active command", async 
   abort.abort();
   await assert.rejects(execution, /Harbor worker exited/);
   await assert.rejects(session.close(), /Harbor worker exited/);
+});
+
+test("guest runtime defaults are explicit and legacy host execution is rejected", async (t) => {
+  const root = await tempDirectory(t, "crucible-runtime-config-");
+  const load = async (override: Record<string, unknown> = {}) => {
+    const path = join(root, "experiment.json");
+    await writeFile(path, JSON.stringify({
+      name: "runtime test", source: { path: ".", include: ["*"] }, task: "Draw an SVG",
+      producer: { agent: "claude" }, judge: "none", arms: [{}], ...override,
+    }));
+    return loadConfig(path);
+  };
+  const paths = { runRoot: join(root, "runs"), tempRoot: join(root, "temp"), archiveRoot: join(root, "archive") };
+  const defaults = await load();
+  assert.equal(defaults.sandbox, true);
+  assert.deepEqual(runtimeFor(defaults), { concurrency: 2, cpus: 2, memoryMb: 4096 });
+  assert.deepEqual(runtimeFor(await load({ runtime: { concurrency: 1, memoryMb: 2048 } })), { concurrency: 1, cpus: 2, memoryMb: 2048 });
+  await assert.rejects(load({ sandbox: false }), /no host execution fallback/);
+  await assert.rejects(load({ runtime: { cpus: 0 } }), /positive integer/);
+  await assert.rejects(load({ runtime: { concurrency: 1.5 } }), /positive integer/);
+  await assert.rejects(load({ runtime: { backend: "host" } }), /runtime may only set/);
+  await assert.rejects(load({ arms: [{ reuse: { run: "ab-12345678", arm: "old" }, task: "changed" }] }), /cannot be combined/);
+  await assert.rejects(prepareRun({ ...await load(), nodeModules: "/host/node_modules" }, paths), /install dependencies with producer.setup/);
 });

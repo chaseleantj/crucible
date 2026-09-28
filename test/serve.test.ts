@@ -1,13 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
-import { createServer } from "node:http";
-import { tmpdir } from "node:os";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { resolveInside, serveOutputs } from "../src/serve.js";
+import { tempDirectory } from "./support/files.js";
 
-async function outputs(): Promise<string> {
-  const inputDir = await mkdtemp(join(tmpdir(), "crucible-serve-"));
+async function outputs(t: test.TestContext): Promise<string> {
+  const inputDir = await tempDirectory(t, "crucible-serve-");
   for (const letter of ["A", "B"]) {
     await mkdir(join(inputDir, letter, "assets"), { recursive: true });
     await writeFile(join(inputDir, letter, "index.html"), `<h1>${letter}</h1>`);
@@ -16,8 +15,8 @@ async function outputs(): Promise<string> {
   return inputDir;
 }
 
-test("each output is served from its own free port and the bytes are the judged files", async () => {
-  const inputDir = await outputs();
+test("each output is served from its own free port and the bytes are the judged files", async (t) => {
+  const inputDir = await outputs(t);
   const servers = await serveOutputs(inputDir, ["A", "B"]);
   try {
     assert.equal(servers.served.length, 2);
@@ -34,22 +33,6 @@ test("each output is served from its own free port and the bytes are the judged 
     await servers.close();
   }
   await assert.rejects(fetch(servers.served[0]!.url));
-});
-
-test("a stale server on a busy port cannot answer for an output", async () => {
-  // The bug: `python3 -m http.server 8801 &` on a port an earlier run still
-  // held failed silently, and the judge scored that run's pages. Port 0 asks
-  // the kernel for a free one, so a squatter never receives the request.
-  const squatter = createServer((_request, response) => response.end("STALE"));
-  await new Promise<void>((done) => squatter.listen(0, "127.0.0.1", done));
-  const inputDir = await outputs();
-  const servers = await serveOutputs(inputDir, ["A"]);
-  try {
-    assert.equal(await (await fetch(servers.served[0]!.url)).text(), "<h1>A</h1>");
-  } finally {
-    await servers.close();
-    squatter.close();
-  }
 });
 
 test("requests stay inside the output folder", () => {

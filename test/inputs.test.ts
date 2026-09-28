@@ -1,17 +1,15 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, stat, symlink, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, readFile, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { stringify } from "yaml";
-import { loadConfig, runtimeFor, taskFor } from "../src/config.js";
-import { removeTree } from "../src/files.js";
+import { loadConfig, taskFor } from "../src/config.js";
 import { prepareRun } from "../src/prepare.js";
 import { producerOf } from "../src/run.js";
+import { tempDirectory } from "./support/files.js";
 
 async function fixture(t: test.TestContext) {
-  const root = await mkdtemp(join(tmpdir(), "crucible-inputs-"));
-  t.after(() => removeTree(root));
+  const root = await tempDirectory(t, "crucible-inputs-");
   await mkdir(join(root, "project"));
   await writeFile(join(root, "project", "brief.txt"), "Draw a coffee cup.\n");
   await mkdir(join(root, "reference"));
@@ -78,18 +76,6 @@ test("arm information rejects unsafe names, collisions, and links", async (t) =>
   await assert.rejects(prepareRun(await load(), paths), /Symlinks are not allowed in arm inputs/);
   await symlink(join(root, "reference"), join(root, "link"));
   await assert.rejects(prepareRun(await load({ arms: [{ inputs: { reference: "./link" } }] }), paths), /Symlinks are not allowed in arm inputs/);
-});
-
-test("guest runtime defaults are explicit and legacy host execution is rejected", async (t) => {
-  const { load, paths } = await fixture(t);
-  assert.deepEqual(runtimeFor(await load()), { concurrency: 2, cpus: 2, memoryMb: 4096 });
-  assert.deepEqual(runtimeFor(await load({ runtime: { concurrency: 1, memoryMb: 2048 } })), { concurrency: 1, cpus: 2, memoryMb: 2048 });
-  await assert.rejects(load({ sandbox: false }), /no host execution fallback/);
-  await assert.rejects(load({ runtime: { cpus: 0 } }), /positive integer/);
-  await assert.rejects(load({ runtime: { concurrency: 1.5 } }), /positive integer/);
-  await assert.rejects(load({ runtime: { backend: "host" } }), /runtime may only set/);
-  await assert.rejects(load({ arms: [{ reuse: { run: "ab-12345678", arm: "old" }, task: "changed" }] }), /cannot be combined/);
-  await assert.rejects(prepareRun({ ...await load(), nodeModules: "/host/node_modules" }, paths), /install dependencies with producer.setup/);
 });
 
 test("Claude settings are frozen and producer environment cannot replace broker credentials", async (t) => {
