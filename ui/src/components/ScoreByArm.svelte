@@ -80,7 +80,7 @@
   {#if width > 0 && values.length > 0}
     <svg {width} {height} role="img" aria-label={summary}>
       {#each axis.ticks as tick (tick)}
-        <line class="grid" x1={x(tick)} x2={x(tick)} y1={TOP} y2={TOP + rows.length * ROW} />
+        <line class="rule" x1={x(tick)} x2={x(tick)} y1={TOP} y2={TOP + rows.length * ROW} />
         <text class="tick" x={x(tick)} y={TOP + rows.length * ROW + 16} text-anchor="middle">{tick}</text>
       {/each}
       <text class="axis-title" x={label + 16 + (width - label - 32) / 2} y={height - 4} text-anchor="middle">Weighted total</text>
@@ -114,8 +114,8 @@
       {/each}
     </svg>
     {#if tip}
-      <div class="tip surface" style="left: {tip.x}px; top: {tip.y}px" aria-hidden="true">
-        <strong>{score(tip.value)}</strong>
+      <div class="tip overlay" style="left: {tip.x}px; top: {tip.y}px" aria-hidden="true">
+        <span class="t-strong">{score(tip.value)}</span>
         <span class="t-meta">{tip.when}</span>
       </div>
     {/if}
@@ -127,12 +127,11 @@
 <style>
   .plot { position: relative; min-width: 0; }
   svg { display: block; overflow: visible; font: var(--text-meta); }
-  .grid { stroke: var(--hairline); stroke-width: 1; }
   .rule { stroke: var(--hairline); stroke-width: 1; }
-  .tick { fill: var(--faint); font-size: 12px; }
-  .axis-title { fill: var(--muted); font-size: 12px; }
+  .tick { fill: var(--faint); }
+  .axis-title { fill: var(--muted); }
   .arm { fill: var(--muted); }
-  .lead .arm { fill: var(--ink); font-weight: 600; }
+  .lead .arm { fill: var(--ink); font: var(--text-strong); }
   .mean { stroke: var(--muted); stroke-width: 2; stroke-linecap: round; }
   .lead .mean { stroke: var(--ink); }
   /* A 2px ring in the ground keeps overlapping dots apart. */
@@ -145,15 +144,11 @@
 
   .tip {
     position: absolute;
-    transform: translate(-50%, calc(-100% - 12px));
+    transform: translate(-50%, calc(-100% - var(--s-3)));
     display: grid;
-    gap: 0;
     padding: var(--s-1) var(--s-2);
     border-radius: var(--radius-small);
-    border-color: var(--hairline-strong);
-    box-shadow: var(--shadow-dialog);
     white-space: nowrap;
     pointer-events: none;
-    font: var(--text-meta);
   }
 </style>

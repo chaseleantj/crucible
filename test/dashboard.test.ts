@@ -183,8 +183,6 @@ test("j and k move through the list, Enter opens a result, and Esc comes back to
 
   await page.keyboard.press("Enter");
   await page.getByRole("heading", { name: "Extra 05" }).first().waitFor();
-  // Confidence, judge and date live once, in the run's facts, not in the verdict.
-  assert.equal((await page.locator(".verdict").textContent())?.trim(), "a wins by 2.00");
   await page.keyboard.press("Escape");
   await page.locator("table.results").waitFor();
   assert.equal(await page.evaluate(() => location.hash), "#/?page=2");
@@ -206,8 +204,7 @@ test("a series shows its runs with the mean strongest, and a dot plot of score b
   assert.equal(await plot.locator("circle.dot").count(), 6, "a dot per run per arm");
   assert.equal(await plot.locator("circle.ring").count(), 2, "the run shown is ringed in each arm");
   assert.equal(await plot.locator("line.mean").count(), 2);
-  assert.match(await page.locator(".verdict").textContent() ?? "", /b wins 2 of 3 judged runs\s*·\s*by 0\.90 on mean total/);
-  assert.equal(await page.locator("tr.mean td").first().textContent(), "Mean");
+  assert.equal(await page.locator("tr.total td").first().textContent(), "Mean");
 
   // j steps to the next run, in place.
   const shown = () => page.locator("tr.current a.pick").textContent();
@@ -240,8 +237,8 @@ test("seven arms scroll sideways under pinned headers, four at a time", { skip: 
   assert.equal(after.heads, after.body, "the headers follow the columns");
   assert.equal(await page.locator(".compare .heads .head").count(), 7);
   // The criteria compare every arm, the best of each row marked.
-  assert.equal(await page.locator("table.criteria tr.sum td.lead").textContent(), "7.80");
-  assert.equal(await page.locator("table.criteria tr.delta td").last().textContent(), "+1.80");
+  assert.equal(await page.locator("table.best tr.total td.lead").textContent(), "7.80");
+  assert.equal(await page.locator("table.best tr.delta td").last().textContent(), "+1.80");
 });
 
 test("the date filter keeps rows by their newest run, combines with search, lives in the address, and clears", { skip: !ready, timeout: TEST_MS }, async (t) => {

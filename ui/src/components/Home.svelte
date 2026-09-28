@@ -213,19 +213,19 @@
       </div>
 
       {#if rows.length === 0}
-        <p class="t-meta none">No archived results yet. Finished runs appear here once they are archived.</p>
+        <p class="t-body empty-note">No archived results yet. Finished runs appear here once they are archived.</p>
       {:else}
         <div class="list-bar" bind:this={bar}>
           {#if chosen.length > 0}
             <div class="selection" role="group" aria-label="Selection">
-              <span class="t-body picked" role="status">{chosen.length} selected</span>
+              <span class="t-strong picked" role="status">{chosen.length} selected</span>
               {#if chosen.length < shown.length}
-                <button class="btn quiet" onclick={pickAll}>Select all {shown.length}{words.length || dated || home.filter !== "all" ? " matching" : ""}</button>
+                <button class="text-button t-meta" onclick={pickAll}>Select all {shown.length}{words.length || dated || home.filter !== "all" ? " matching" : ""}</button>
               {:else if paged}
                 <span class="t-meta">All {shown.length}{words.length || dated || home.filter !== "all" ? " matching" : ""}</span>
               {/if}
               <button class="btn btn-danger" onclick={() => deleter?.open(chosen)}>Delete…</button>
-              <button class="btn quiet" onclick={clearSelection} title="Clear the selection (Esc)" aria-keyshortcuts="Escape">Clear</button>
+              <button class="text-button t-meta" onclick={clearSelection} data-tip="Clear the selection (Esc)" aria-keyshortcuts="Escape">Clear</button>
             </div>
           {:else}
             <div class="filters">
@@ -243,7 +243,7 @@
         </div>
 
         {#if shown.length === 0}
-          <div class="none">
+          <div class="empty-note none">
             <p class="t-body">
               {#if words.length}No results match “{home.query.trim()}”{:else}No results{/if}{home.filter === "all" ? "" : ` under ${filterLabel}`}{dated ? `, ${dateLabel(home.date).replace(/^[A-Z]/, (c) => c.toLowerCase())}` : ""}.
             </p>
@@ -279,9 +279,8 @@
   .first { margin-top: 0; }
   #running { scroll-margin-top: calc(var(--topbar) + var(--s-4)); }
   .live-list { display: grid; gap: var(--s-3); }
-  .updated { margin-left: var(--s-1); }
   .search { width: 240px; }
-  .none { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2) var(--s-4); padding: var(--s-5) 0; }
+  .none { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2) var(--s-4); }
 
   /* Filters on the left, paging on the right, pinned under the top bar. */
   .list-bar {
@@ -297,11 +296,10 @@
   }
   /* The tabs, the dates, then paging at the right; narrow, the tabs take a row. */
   .filters { display: contents; }
-  .selection { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2); min-height: var(--control); }
+  .selection { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-4); min-height: var(--control); }
   .list-bar :global(.pager) { margin-left: auto; margin-right: calc(-1 * var(--s-3)); }
   /* Quiet buttons at either end line their words up with the tabs and the table. */
   .filters :global(.date-filter) { margin-left: calc(-1 * var(--s-3)); }
-  .picked { margin-right: var(--s-2); font-weight: 600; }
 
   @media (max-width: 640px) {
     .search { width: 160px; }

@@ -11,14 +11,13 @@
   --surface-selected: #1a1e26;
 
   --ink: #eef1f5;
-  --ink-hover: #c9ced6; /* an ink fill under the pointer */
   --muted: #9aa1ad; /* 7.9:1 on --bg */
   --faint: #7a818e; /* 5.3:1 on --bg, the floor for text */
 
   --hairline: #1a1e25;
   --hairline-strong: #2a2f38;
   --control-border: #60666f; /* 3:1 on --surface: a control's edge must be findable */
-  --frame: #1a1e25; /* around captures: a page with a white ground needs a firmer edge by day */
+  --frame: var(--hairline); /* around captures: a page with a white ground needs a firmer edge by day */
 
   /* Semantic only: trouble, attention, and a healthy running agent. */
   --danger: hsl(4 72% 66%);
@@ -29,7 +28,6 @@
 
   /* Focus is neutral: a ring for the keyboard, a firmer edge for a field. */
   --focus: var(--muted);
-  --field-focus: var(--muted);
 
   /* Neutral data: a bar's track and fill, and the best cell of a row. */
   --meter-track: var(--hairline-strong);
@@ -39,7 +37,10 @@
   /* The shade at the edge of a table that scrolls sideways. */
   --edge-shade: hsl(220 20% 70% / 0.14);
   --shadow-dialog: 0 24px 80px hsl(220 30% 2% / 0.8);
+  --shadow-tip: 0 4px 12px hsl(220 30% 2% / 0.6);
   --scrim: hsl(220 24% 4% / 0.7);
+  /* An output page that paints no ground of its own expects the browser's white. */
+  --page-ground: #fff;
   /* The chevron of a select, stroked in --muted. */
   --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 16 16' fill='none' stroke='%239aa1ad' stroke-width='1.6'%3E%3Cpath d='M4 6.5 8 10.5 12 6.5'/%3E%3C/svg%3E");
   /* A ticked box's mark, stroked in --bg on its ink fill; a half-ticked one's dash. */
@@ -62,23 +63,38 @@
   --s-7: 48px;
   --s-8: 64px;
 
-  /* Type: four roles. Numbers use the same face with tabular figures. */
+  /* Type: six roles plus code, two weights, and nothing outside them. Page is the
+     only tracked role. Meta carries tables, controls and the chart; strong
+     meta is its chosen or total state; label sits inside chips and keys.
+     Numbers use the same face with tabular figures. */
   --text-page: 600 22px/1.25 var(--font);
   --text-heading: 600 15px/1.4 var(--font);
   --text-body: 400 14px/1.5 var(--font);
   --text-meta: 400 13px/1.45 var(--font);
+  --text-strong: 600 13px/1.45 var(--font);
+  --text-label: 600 12px/1 var(--font);
+  --text-code: 400 13px/1.45 var(--mono);
   --font: "Manrope", -apple-system, system-ui, sans-serif;
   --mono: ui-monospace, "SF Mono", Menlo, monospace;
 
   --radius: 12px;
   --radius-small: 8px;
   --radius-control: 6px; /* buttons, fields, menus: squared, not pills */
+  --radius-inner: 4px; /* a control inside a control: a segment, a checkbox, a thumbnail */
+  --menu-inset: calc(2 * var(--s-2) + 14px); /* a menu choice's words, past its check */
   --radius-pill: 999px;
 
+  /* Heights: a control, a chip or key inside text, a data row, a row you open. */
   --control: 32px;
-  --topbar: 52px;
+  --chip: 20px;
+  --row-compact: 36px;
   --row: 40px;
+  --topbar: 52px;
   --content: 1240px;
+  --gutter: var(--s-5);
+  --measure: 620px; /* a state page's column */
+  --prose: 68ch; /* a paragraph's line length */
+  /* The narrow layout starts at 640px; media queries cannot read a token. */
 
   --speed: 150ms;
   --ease: cubic-bezier(0.22, 1, 0.36, 1);
@@ -94,7 +110,6 @@
   --surface-selected: #e3e6eb;
 
   --ink: #0d1016;
-  --ink-hover: #343a45;
   --muted: #4f5663; /* 6.8:1 on --bg */
   --faint: #646b77; /* 5.0:1 on --bg */
 
@@ -109,11 +124,12 @@
   --warn: hsl(32 92% 31%);
   --ok: hsl(150 55% 27%);
 
-  --meter-track: var(--hairline);
-  --meter-fill: var(--faint); /* 4.3:1 on its track */
+  --meter-track: var(--hairline-strong); /* holds on a selected row's ground too */
+  --meter-fill: var(--faint);
 
   --edge-shade: hsl(220 30% 20% / 0.12);
   --shadow-dialog: 0 24px 80px hsl(220 30% 20% / 0.18);
+  --shadow-tip: 0 4px 12px hsl(220 30% 20% / 0.12);
   --scrim: hsl(220 24% 20% / 0.32);
   --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 16 16' fill='none' stroke='%234f5663' stroke-width='1.6'%3E%3Cpath d='M4 6.5 8 10.5 12 6.5'/%3E%3C/svg%3E");
   --tick: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23f5f6f8' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 8.5 6.8 11.2 12 5'/%3E%3C/svg%3E");
@@ -143,6 +159,7 @@ button, input, select { font: inherit; color: inherit; background: none; border:
 button { cursor: pointer; }
 a { color: inherit; text-decoration: none; }
 img { display: block; }
+strong, b { font-weight: 600; }
 ::selection { background: var(--ink); color: var(--bg); }
 
 /* Only for the keyboard. A text field matches :focus-visible on a click
@@ -153,25 +170,30 @@ img { display: block; }
   border-radius: var(--radius-control);
 }
 
-/* Type roles */
+/* Type roles: the only places a font is set. */
 .t-page { font: var(--text-page); letter-spacing: -0.015em; }
-.t-heading { font: var(--text-heading); letter-spacing: -0.005em; }
+.t-heading { font: var(--text-heading); }
 .t-body { font: var(--text-body); }
 .t-meta { font: var(--text-meta); color: var(--muted); }
-code, .code { font-family: var(--mono); font-size: 13px; }
+/* Strong meta: the chosen or totalled thing in a meta line, in ink. */
+.t-strong { font: var(--text-strong); color: var(--ink); }
+code, .code { font: var(--text-code); }
 
-.num { text-align: right; font-variant-numeric: tabular-nums; }
+.num { text-align: right; white-space: nowrap; }
 .clip { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.spacer { flex: 1; }
+.push { margin-left: auto; }
+/* Controls that travel together, wrapping as one. */
+.cluster { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2); min-width: 0; }
+/* A title over its meta line, set tight. */
+.stack { display: grid; gap: 2px; min-width: 0; }
 
-/* Layout */
-.page {
-  width: 100%;
-  max-width: var(--content);
-  margin: 0 auto;
-  padding: var(--s-5) var(--s-5) var(--s-8);
-}
+/* Layout: one column, one gutter, narrowed once at 640px. */
+.column, .page { width: 100%; max-width: var(--content); margin: 0 auto; padding-inline: var(--gutter); }
+.page { padding-block: var(--s-5) var(--s-8); }
 @media (max-width: 640px) {
-  .page { padding: var(--s-4) var(--s-4) var(--s-7); }
+  :root { --gutter: var(--s-4); }
+  .page { padding-block: var(--s-4) var(--s-7); }
 }
 
 .section { margin-top: var(--s-6); }
@@ -182,8 +204,18 @@ code, .code { font-family: var(--mono); font-size: 13px; }
   min-height: var(--control);
   margin-bottom: var(--s-3);
 }
-.section-head .count { color: var(--muted); font: var(--text-heading); }
-.section-head .spacer { flex: 1; }
+.section-head .count { font: var(--text-heading); color: var(--muted); }
+/* A section that folds: the whole head is its button. */
+button.section-head {
+  margin-bottom: 0;
+  padding: 0 var(--s-2);
+  margin-inline: calc(-1 * var(--s-2));
+  width: calc(100% + 2 * var(--s-2));
+  border-radius: var(--radius-control);
+  text-align: left;
+  transition: background var(--speed) var(--ease);
+}
+button.section-head:hover { background: var(--surface-hover); }
 
 .surface {
   background: var(--surface);
@@ -191,8 +223,31 @@ code, .code { font-family: var(--mono); font-size: 13px; }
   border-radius: var(--radius);
 }
 
-/* Buttons: one height, one radius. An outline by default; quiet (no edge
-   until hovered) for chrome such as icons and menus; primary in ink. */
+/* Anything floating over the page: a dialog, a menu, a tooltip. */
+.overlay {
+  background: var(--surface);
+  border: 1px solid var(--hairline-strong);
+  color: var(--ink);
+  box-shadow: var(--shadow-dialog);
+}
+.dialog {
+  margin: auto;
+  width: min(440px, calc(100vw - 2 * var(--s-4)));
+  padding: var(--s-5);
+  border-radius: var(--radius);
+}
+.dialog.wide { width: min(520px, calc(100vw - 2 * var(--s-4))); }
+.dialog::backdrop { background: var(--scrim); }
+.dialog .actions { display: flex; justify-content: flex-end; gap: var(--s-2); margin-top: var(--s-5); }
+/* A confirmation: a question, what it removes, Cancel first. */
+.confirm p { margin-top: var(--s-2); color: var(--muted); overflow-wrap: anywhere; }
+.confirm p.tone-danger { color: var(--danger); }
+
+/* Buttons: one height, one radius, variants by intent. An outline by
+   default, and for steppers that flank a field; quiet (no edge) for chrome
+   such as icons, menu triggers and steppers standing alone; danger muted
+   until hovered, so it never outranks the content; solid danger only to
+   confirm. A button's hover never shows while it is off. */
 .btn {
   display: inline-flex;
   align-items: center;
@@ -205,41 +260,56 @@ code, .code { font-family: var(--mono); font-size: 13px; }
   font: var(--text-meta);
   color: var(--ink);
   white-space: nowrap;
-  transition: background var(--speed) var(--ease), border-color var(--speed) var(--ease);
+  transition: background var(--speed) var(--ease), border-color var(--speed) var(--ease), color var(--speed) var(--ease);
 }
-.btn:hover { background: var(--surface-hover); border-color: var(--muted); }
 .btn.square { width: var(--control); padding: 0; }
-.btn:disabled, .btn[aria-disabled="true"] { opacity: 0.45; cursor: not-allowed; }
-.btn:disabled:hover, .btn[aria-disabled="true"]:hover { background: none; border-color: var(--control-border); }
 .btn.quiet { border-color: transparent; color: var(--muted); }
-.btn.quiet:hover { border-color: transparent; color: var(--ink); }
-.btn.quiet:disabled:hover, .btn.quiet[aria-disabled="true"]:hover { border-color: transparent; color: var(--muted); }
-/* The page's one primary action: inverted, as a chosen segment is. */
-.btn-primary { background: var(--ink); color: var(--bg); border-color: var(--ink); font-weight: 600; }
-.btn-primary:hover { background: var(--ink-hover); border-color: var(--ink-hover); }
-/* Quiet until meant: red only on hover, so it never rivals the primary action. */
 .btn-danger { color: var(--muted); }
-.btn-danger:hover { color: var(--danger); border-color: var(--danger); background: var(--danger-soft); }
-.btn-danger.solid { background: var(--danger); border-color: var(--danger); color: var(--bg); font-weight: 600; }
-.btn-danger.solid:hover { background: var(--danger-strong); border-color: var(--danger-strong); }
+.btn-danger.solid { background: var(--danger); border-color: var(--danger); color: var(--bg); font: var(--text-strong); }
+.btn:disabled, .btn[aria-disabled="true"] { opacity: 0.45; cursor: not-allowed; }
+.btn:enabled:not([aria-disabled="true"]):hover, a.btn:not([aria-disabled="true"]):hover { background: var(--surface-hover); border-color: var(--muted); }
+.btn.quiet:enabled:not([aria-disabled="true"]):hover, a.btn.quiet:hover { border-color: transparent; color: var(--ink); }
+.btn-danger:enabled:not([aria-disabled="true"]):hover { color: var(--danger); border-color: var(--danger); background: var(--danger-soft); }
+.btn-danger.quiet:enabled:not([aria-disabled="true"]):hover { border-color: transparent; color: var(--danger); }
+.btn-danger.solid:enabled:hover { background: var(--danger-strong); border-color: var(--danger-strong); color: var(--bg); }
+/* A trigger's chevron sits closer to its word. */
+.btn .chevron { margin-left: calc(-1 * var(--s-1)); }
+/* A trigger whose menu is open, and a quiet toggle that is on. */
+.btn[aria-expanded="true"] { background: var(--surface-hover); color: var(--ink); }
+.btn.quiet.active { color: var(--ink); }
+/* The last quiet icon in a row lines its glyph up with the column's edge. */
+.flush-end { margin-right: calc((14px - var(--control)) / 2); }
 
-/* Segmented control, for a tiny set of exclusive options (Captures or Live). */
+/* A text button: words that act, with no box. Muted until hovered. */
+.text-button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-1);
+  color: var(--muted);
+  transition: color var(--speed) var(--ease);
+}
+.text-button:hover { color: var(--ink); }
+
+/* Segmented control: two or three exclusive icons (Captures or Live). The
+   chosen one is tinted and edged, the others lift on hover as quiet buttons do. */
 .segmented {
   display: inline-flex;
+  gap: 2px;
   height: var(--control);
   padding: 2px;
   border: 1px solid var(--control-border);
   border-radius: var(--radius-control);
 }
 .segmented button {
-  padding: 0 var(--s-3);
-  border-radius: 4px;
-  font: var(--text-meta);
+  display: grid;
+  place-items: center;
+  aspect-ratio: 1;
+  border-radius: var(--radius-inner);
   color: var(--muted);
+  transition: background var(--speed) var(--ease), color var(--speed) var(--ease);
 }
-.segmented button:hover { color: var(--ink); }
-.segmented.icons button { display: grid; place-items: center; width: 30px; padding: 0; }
-.segmented button[aria-pressed="true"] { background: var(--ink); color: var(--bg); font-weight: 600; }
+.segmented button:hover { color: var(--ink); background: var(--surface-hover); }
+.segmented button[aria-pressed="true"] { color: var(--ink); background: var(--surface-selected); box-shadow: inset 0 0 0 1px var(--control-border); }
 
 /* Tabs, for filters over one list: plain words, the chosen one in ink on an
    ink rule, each with its count. */
@@ -255,8 +325,75 @@ code, .code { font-family: var(--mono); font-size: 13px; }
   transition: color var(--speed) var(--ease), box-shadow var(--speed) var(--ease);
 }
 .tabs button:hover { color: var(--ink); }
-.tabs button[aria-pressed="true"] { color: var(--ink); font-weight: 600; box-shadow: inset 0 -2px 0 var(--ink); }
-.tabs .n { color: var(--faint); font-weight: 400; }
+/* Chosen by ink and rule, not weight, so the row never shifts. */
+.tabs button[aria-pressed="true"] { color: var(--ink); box-shadow: inset 0 -2px 0 var(--ink); }
+.tabs .n { font: var(--text-meta); color: var(--faint); }
+
+/* A tooltip: names an icon-only control, or says why a control is off.
+   Shown on hover after a beat and at once on keyboard focus, drawn as an
+   overlay. It hangs below, centred; .tips-end and .tips-start on a row near
+   the window's edge anchor it to that side, and .tip-above lifts it. */
+[data-tip] { position: relative; }
+[data-tip]::after {
+  content: attr(data-tip);
+  position: absolute;
+  top: calc(100% + var(--s-1));
+  left: 50%;
+  translate: -50% 0;
+  z-index: 20;
+  padding: var(--s-1) var(--s-2);
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-small);
+  background: var(--surface);
+  box-shadow: var(--shadow-tip);
+  font: var(--text-meta);
+  color: var(--ink);
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity var(--speed) var(--ease), visibility var(--speed);
+}
+[data-tip]:hover::after { opacity: 1; visibility: visible; transition-delay: 400ms; }
+[data-tip]:focus-visible::after { opacity: 1; visibility: visible; transition-delay: 0ms; }
+[data-tip][aria-expanded="true"]::after { display: none; }
+.tips-end [data-tip]::after, [data-tip].tips-end::after { left: auto; right: 0; translate: none; }
+.tips-start [data-tip]::after, [data-tip].tips-start::after { left: 0; translate: none; }
+.tip-above::after { top: auto; bottom: calc(100% + var(--s-1)); }
+
+/* A menu: a floating list of choices, each a full-width row with its
+   check in a fixed slot so the words align. */
+.menu {
+  position: fixed;
+  inset: auto;
+  margin: 0;
+  min-width: 168px;
+  max-width: calc(100vw - 2 * var(--s-2));
+  padding: var(--s-1);
+  overflow: auto;
+  border-radius: var(--radius-small);
+}
+.menu:focus-visible { outline: none; }
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  width: 100%;
+  min-height: var(--control);
+  padding: 0 var(--s-3) 0 var(--s-2);
+  border-radius: var(--radius-control);
+  font: var(--text-meta);
+  color: var(--ink);
+  text-align: left;
+  white-space: nowrap;
+}
+.menu-item:hover, .menu-item:focus-visible { background: var(--surface-hover); outline: none; }
+.menu-item .check { flex: none; visibility: hidden; }
+.menu-item[aria-checked="true"] { font: var(--text-strong); }
+.menu-item[aria-checked="true"] .check { visibility: visible; }
+/* A note starts where the choices' words do, past the check slot. */
+.menu-note { padding: var(--s-2) var(--s-3) var(--s-1) var(--menu-inset); font: var(--text-meta); color: var(--muted); }
+.menu-rule { height: 1px; margin: var(--s-1) 0; background: var(--hairline); }
 
 /* A checkbox: a findable edge at rest, an ink fill when ticked. */
 input[type="checkbox"] {
@@ -266,7 +403,7 @@ input[type="checkbox"] {
   height: 16px;
   margin: 0;
   border: 1.5px solid var(--control-border);
-  border-radius: 4px;
+  border-radius: var(--radius-inner);
   background: transparent center / 14px no-repeat;
   cursor: pointer;
   transition: border-color var(--speed) var(--ease), background-color var(--speed) var(--ease);
@@ -289,28 +426,14 @@ input[type="checkbox"]:focus-visible { outline-offset: 1px; }
 select.field {
   padding-right: var(--s-6);
   appearance: none;
-  background: var(--surface) var(--chevron) no-repeat right 12px center;
+  background: var(--surface) var(--chevron) no-repeat right var(--s-3) center;
   cursor: pointer;
 }
 .field::placeholder { color: var(--faint); }
 .field:hover { border-color: var(--muted); }
-.field:focus { outline: none; border-color: var(--field-focus); }
+.field:focus { outline: none; border-color: var(--focus); }
 
-/* A confirmation over the page: a question, what it removes, Cancel first. */
-.confirm {
-  margin: auto;
-  width: min(440px, calc(100vw - 2 * var(--s-4)));
-  padding: var(--s-5);
-  color: var(--ink);
-  box-shadow: var(--shadow-dialog);
-  border-color: var(--hairline-strong);
-}
-.confirm::backdrop { background: var(--scrim); }
-.confirm p { margin-top: var(--s-2); color: var(--muted); overflow-wrap: anywhere; }
-.confirm .error { color: var(--danger); }
-.confirm .actions { display: flex; justify-content: flex-end; gap: var(--s-2); margin-top: var(--s-5); }
-
-/* Tables: 36px rows, quiet header, numbers right-aligned. */
+/* Tables: compact rows, a quiet header, numbers right-aligned. */
 /* A table wider than its column scrolls inside it, and a soft edge shows
    there is more: the cover gradients scroll with the content, the shade
    stays put, so the shade shows only where content is hidden. */
@@ -333,14 +456,14 @@ select.field {
 table { border-collapse: collapse; width: 100%; font: var(--text-meta); }
 th {
   text-align: left;
-  font-weight: 400;
+  font: var(--text-meta);
   color: var(--muted);
   padding: 0 var(--s-3) var(--s-2);
   border-bottom: 1px solid var(--hairline-strong);
   white-space: nowrap;
 }
 td {
-  height: 36px;
+  height: var(--row-compact);
   padding: var(--s-2) var(--s-3);
   border-bottom: 1px solid var(--hairline);
   color: var(--ink);
@@ -349,18 +472,42 @@ td {
 th:first-child, td:first-child { padding-left: 0; }
 th:last-child, td:last-child { padding-right: 0; }
 tr:last-child td { border-bottom: none; }
-th.num, td.num { text-align: right; white-space: nowrap; }
+td.dim { color: var(--muted); }
+/* The best cell of a row, in strong meta; in a .best table on a ground too. */
+td.lead { font: var(--text-strong); }
+table.best td.lead { background: var(--best); }
+/* Arm names head their columns, wrapping at their hyphens rather than clipping. */
+th.arm-col { white-space: normal; max-width: 120px; vertical-align: bottom; }
+/* A total is the answer: the strongest row, under a firmer rule. */
+tr.total td { height: var(--row); border-top: 1px solid var(--hairline-strong); vertical-align: middle; font: var(--text-strong); color: var(--ink); }
+
+/* Tables with grounds (rows you open, best cells) keep text off the ground's edge. */
+table.inset th:first-child, table.inset td:first-child { padding-left: var(--s-2); }
+table.inset th:last-child, table.inset td:last-child { padding-right: var(--s-2); }
+
+/* Rows you open: the row's link covers it. Hover, then ticked, then the
+   row the keyboard or the page has selected, which carries an ink edge. */
+table.linked tbody tr { position: relative; }
+table.linked tbody tr:where(:not(.total)):hover td { background: var(--surface-hover); }
+table.linked tbody tr.checked td { background: var(--surface-selected); }
+tr.current td, table.linked tbody tr.current td,
+table.linked tbody tr:has(.row-link:focus-visible) td { background: var(--surface-selected); }
+tr.current td:first-child, table.linked tbody tr:has(.row-link:focus-visible) td:first-child { box-shadow: inset 2px 0 0 var(--ink); }
+tr.current td.dim { color: var(--ink); }
+.row-link { color: var(--ink); }
+.row-link::after { content: ""; position: absolute; inset: 0; }
+.row-link:focus-visible { outline: none; }
 
 /* The winner's name: the one inverted mark on a page. */
 .winner-chip {
   display: inline-flex;
   align-items: center;
-  height: 20px;
+  height: var(--chip);
   padding: 0 var(--s-2);
   border-radius: var(--radius-pill);
   background: var(--ink);
   color: var(--bg);
-  font: 600 12px/1 var(--font);
+  font: var(--text-label);
 }
 
 .tone-ok { color: var(--ok); }
@@ -399,22 +546,36 @@ th.num, td.num { text-align: right; white-space: nowrap; }
 .dot { display: inline-block; flex: none; width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
 .dot.pulse { animation: pulse 1.6s ease-in-out infinite; }
 
-/* The row the keyboard or the page has selected: an ink edge. */
-tr.current td { background: var(--surface-selected); }
-tr.current td:first-child { box-shadow: inset 2px 0 0 var(--ink); }
-
+/* A key, as in a shortcut. */
 .kbd {
   display: inline-grid;
   place-items: center;
-  min-width: 22px;
-  height: 22px;
+  min-width: var(--chip);
+  height: var(--chip);
   padding: 0 var(--s-1);
   border: 1px solid var(--hairline-strong);
   border-bottom-width: 2px;
-  border-radius: 6px;
-  font: 600 12px/1 var(--font);
+  border-radius: var(--radius-inner);
+  font: var(--text-label);
   color: var(--ink);
 }
 
-.inline-link { font: inherit; color: var(--ink); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--faint); }
+/* A command to copy, set apart on its own ground. */
+.command {
+  justify-self: start;
+  padding: var(--s-2) var(--s-3);
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-small);
+  background: var(--surface);
+  color: var(--ink);
+  user-select: all;
+}
+
+/* A page that stands in for content: loading failed, nothing yet, gone. */
+.state-page { display: grid; gap: var(--s-3); justify-items: start; max-width: var(--measure); padding: var(--s-8) 0 var(--s-6); }
+.lede { color: var(--muted); }
+/* A note where a list or picture would be. */
+.empty-note { padding: var(--s-5) 0; color: var(--muted); }
+
+.inline-link { color: var(--ink); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--faint); }
 .inline-link:hover { text-decoration-color: currentColor; }

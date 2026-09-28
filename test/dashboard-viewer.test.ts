@@ -98,7 +98,7 @@ test("live, synced decks turn together: from the page's arrows, and from an arro
   const frame = (arm: string) => page.frameLocator(`.compare iframe[src*="/outputs/${arm}/"]`);
   const slide = (arm: string, text: string) => frame(arm).getByText(text, { exact: true }).waitFor();
   await page.goto(`${url}#/q/ab-00000002/ab-00000002`);
-  await page.getByRole("button", { name: "Live", exact: true }).click();
+  await page.getByRole("button", { name: "Live page", exact: true }).click();
   await slide("a", "Slide 2");
   await slide("b", "Slide 3");
 

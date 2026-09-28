@@ -45,7 +45,7 @@
   const wide = $derived(labels.length > 3);
 </script>
 
-<section class="run" aria-label="Run {result.runId}">
+<section class="section" aria-label="Run {result.runId}">
   <!-- A series names the run shown by its row in the runs table, so no heading repeats its date and score. -->
   {#if run.issues?.length}
     <p class="t-meta tone-warn issues" role="status">{run.issues.join(" · ")}</p>
@@ -53,13 +53,13 @@
 
   <ArmsCompare {run} questionKey={question.key} {judged} />
 
-  <div class="columns" class:wide>
-    <div class="column">
+  <div class="section columns" class:wide>
+    <div class="col">
       {#if judged && judged.scores.length > 0}
         <section aria-labelledby="criteria-title">
-          <h3 id="criteria-title" class="t-heading">Criteria</h3>
+          <h2 id="criteria-title" class="t-heading section-head">Criteria</h2>
           <div class="table-wrap">
-            <table class="criteria">
+            <table class="best inset">
               <thead>
                 <tr>
                   <th>Criterion</th>
@@ -79,7 +79,7 @@
                     {/each}
                   </tr>
                 {/each}
-                <tr class="sum">
+                <tr class="total">
                   <td class="row-label">Weighted total</td>
                   <td></td>
                   {#each labels as label (label)}
@@ -102,15 +102,15 @@
         </section>
       {:else if !judged}
         <section aria-labelledby="unjudged-title">
-          <h3 id="unjudged-title" class="t-heading">{NOT_JUDGED}</h3>
+          <h2 id="unjudged-title" class="t-heading section-head">{NOT_JUDGED}</h2>
           <p class="t-body prose">This run was produced and captured without a judge, so it has no scores or winner. The captures above are its evidence.</p>
         </section>
       {/if}
 
       <section aria-labelledby="cost-title">
-        <h3 id="cost-title" class="t-heading">Time and tokens</h3>
+        <h2 id="cost-title" class="t-heading section-head">Time and tokens</h2>
         <div class="table-wrap">
-          <table>
+          <table class="inset">
             <thead>
               <tr>
                 <th>Arm</th>
@@ -124,10 +124,10 @@
               {#each costs as { label, cost } (label)}
                 <tr>
                   <td class="clip arm-name" title={label}>{label}</td>
-                  <td class="num">
+                  <td class="num" class:dim={!cost}>
                     {#if cost}<span class="with-bar">{duration(cost.wallTimeMs)}<span class="meter" aria-hidden="true"><span style="--value: {longest ? cost.wallTimeMs / longest : 0}"></span></span></span>{:else}—{/if}
                   </td>
-                  <td class="num">
+                  <td class="num" class:dim={!cost?.tokens}>
                     {#if cost?.tokens}<span class="with-bar">{compact(cost.tokens.output)}<span class="meter" aria-hidden="true"><span style="--value: {most ? cost.tokens.output / most : 0}"></span></span></span>{:else}—{/if}
                   </td>
                   <td class="num dim">{cost?.tokens ? compact(cost.tokens.input) : "—"}</td>
@@ -140,12 +140,12 @@
       </section>
     </div>
 
-    <div class="column">
+    <div class="col">
       {#if judged}
         <section aria-labelledby="judge-title">
-          <h3 id="judge-title" class="t-heading">Judge's reasoning</h3>
+          <h2 id="judge-title" class="t-heading section-head">Judge's reasoning</h2>
           {#if judged.summary}<p class="t-body prose">{judged.summary}</p>{/if}
-          <dl class="facts">
+          <dl class="facts t-meta">
             {#if guess}
               <div>
                 <dt>Control guess</dt>
@@ -161,8 +161,8 @@
       {/if}
 
       <section aria-labelledby="facts-title">
-        <h3 id="facts-title" class="t-heading">Run</h3>
-        <dl class="facts">
+        <h2 id="facts-title" class="t-heading section-head">Run</h2>
+        <dl class="facts t-meta">
           {#if sharedProducer}<div><dt>Producer</dt><dd>{sharedProducer}</dd></div>{/if}
           <div><dt>Skills</dt><dd>{environment}</dd></div>
           <!-- A series dates each run in its table. -->
@@ -174,7 +174,7 @@
 
       {#if result.warnings.length > 0}
         <section id="warnings" aria-labelledby="warnings-title" tabindex="-1">
-          <h3 id="warnings-title" class="t-heading tone-warn">{result.warnings.length === 1 ? "Warning" : `${result.warnings.length} warnings`}</h3>
+          <h2 id="warnings-title" class="t-heading section-head tone-warn">{result.warnings.length === 1 ? "Warning" : `${result.warnings.length} warnings`}</h2>
           <ul class="warnings t-body">
             {#each result.warnings as warning, i (i)}
               <li>
@@ -189,44 +189,31 @@
 </section>
 
 <style>
-  .run { margin-top: var(--s-6); }
   .issues { margin-bottom: var(--s-3); }
 
   .columns {
     display: grid;
     grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
     gap: var(--s-7);
-    margin-top: var(--s-6);
   }
   /* Many arms: the tables take the full width, the reasoning sits beneath. */
   .columns.wide { grid-template-columns: minmax(0, 1fr); gap: var(--s-6); }
-  .columns.wide .column:last-child { grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); column-gap: var(--s-7); }
-  .column { display: grid; gap: var(--s-6); align-content: start; min-width: 0; }
-  .column > * { min-width: 0; }
-  .column h3 { margin-bottom: var(--s-3); display: flex; align-items: baseline; gap: var(--s-2); }
-  .prose { max-width: 68ch; color: var(--ink); }
-  .facts { display: grid; gap: var(--s-2); margin-top: var(--s-4); font: var(--text-meta); }
+  .columns.wide .col:last-child { grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); column-gap: var(--s-7); }
+  .col { display: grid; gap: var(--s-6); align-content: start; min-width: 0; }
+  .col > * { min-width: 0; }
+  .prose { max-width: var(--prose); }
+  .facts { display: grid; gap: var(--s-2); margin-top: var(--s-4); }
   .facts div { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: var(--s-3); }
-  .facts dt { color: var(--muted); }
-  .facts dd { overflow-wrap: anywhere; }
-  /* Arm names wrap at their hyphens rather than clip. */
-  .arm-col { white-space: normal; max-width: 120px; vertical-align: bottom; }
+  .facts dd { color: var(--ink); overflow-wrap: anywhere; }
   .arm-name { max-width: 200px; }
   .criterion { min-width: 160px; }
-
-  /* The best cell of each row: bold on a quiet neutral ground, never a hue. */
-  .criteria td.lead { font-weight: 600; background: var(--best); }
-  td.dim { color: var(--muted); }
-  /* The weighted total is the answer: the strongest row. */
-  .criteria td:last-child, .criteria th:last-child { padding-right: var(--s-3); }
-  tr.sum td { border-top: 1px solid var(--hairline-strong); font-weight: 600; color: var(--ink); vertical-align: middle; height: 40px; }
-  tr.sum td.lead { background: var(--best); }
   .row-label { white-space: nowrap; }
   tr.delta td { color: var(--muted); }
   .with-bar { display: inline-flex; align-items: center; gap: var(--s-2); }
+  /* Two bars share a five-column table, so each is shorter than a list's. */
   .with-bar .meter { width: 48px; }
 
-  .warnings { padding-left: var(--s-4); display: grid; gap: var(--s-2); color: var(--ink); overflow-wrap: anywhere; }
+  .warnings { padding-left: var(--s-4); display: grid; gap: var(--s-2); overflow-wrap: anywhere; }
   .hash { color: var(--muted); }
   #warnings { scroll-margin-top: calc(var(--topbar) + var(--s-5)); }
   #warnings:focus { outline: none; }

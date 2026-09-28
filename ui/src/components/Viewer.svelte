@@ -6,6 +6,7 @@
   import { correspondingPage, pageUrl, splitPage } from "../lib/runs";
   import type { Experiment } from "../lib/types";
   import { isJudged } from "../lib/verdict";
+  import Icon from "./Icon.svelte";
 
   let { run, questionKey, viewing, onClose }: { run: Experiment; questionKey: string; viewing: Viewing; onClose: () => void } = $props();
 
@@ -112,13 +113,13 @@
   }}
 >
   <header class="bar">
-    <button class="btn square" onclick={onClose} aria-label="Close the viewer" title="Close (Esc)">
-      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" /></svg>
+    <button class="btn square quiet tips-start" onclick={onClose} aria-label="Close the viewer" data-tip="Close (Esc)">
+      <Icon name="close" />
     </button>
-    <div class="group arms">
+    <div class="cluster arms">
       {#if labels.length > 1}
-        <button class="btn square" onclick={() => step(-1)} aria-label="Previous arm" title="Previous arm">
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 3.5 5.5 8l4.5 4.5" /></svg>
+        <button class="btn square" onclick={() => step(-1)} aria-label="Previous arm" data-tip="Previous arm">
+          <Icon name="chevron-left" />
         </button>
         <label>
           <span class="sr-only">Arm</span>
@@ -128,15 +129,15 @@
             {/each}
           </select>
         </label>
-        <button class="btn square" onclick={() => step(1)} aria-label="Next arm" title="Next arm">
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3.5 10.5 8 6 12.5" /></svg>
+        <button class="btn square" onclick={() => step(1)} aria-label="Next arm" data-tip="Next arm">
+          <Icon name="chevron-right" />
         </button>
       {:else}
         <span class="t-heading clip" title={arm}>{arm}</span>
       {/if}
       {#if won}<span class="winner-chip">Winner</span>{/if}
     </div>
-    <div class="group pages">
+    <div class="cluster pages">
       {#if pages.length > 1}
         <label>
           <span class="sr-only">Page</span>
@@ -149,14 +150,14 @@
         <span class="t-meta clip" title={pages[0]}>{pages[0]}</span>
       {/if}
     </div>
-    <div class="group actions">
+    <div class="cluster push actions tips-end">
       <div class="segmented device" role="group" aria-label="Frame width">
-        <button aria-pressed={viewing.device === "desktop"} onclick={() => go({ device: "desktop" })}>Desktop</button>
-        <button aria-pressed={viewing.device === "phone"} onclick={() => go({ device: "phone" })}>Phone</button>
+        <button aria-pressed={viewing.device === "desktop"} onclick={() => go({ device: "desktop" })} aria-label="Desktop" data-tip="Desktop"><Icon name="desktop" /></button>
+        <button aria-pressed={viewing.device === "phone"} onclick={() => go({ device: "phone" })} aria-label="Phone" data-tip="Phone"><Icon name="phone" /></button>
       </div>
-      <button class="btn" onclick={() => reloads++} disabled={!src} title={src ? undefined : "There is no page here to reload"}>Reload</button>
+      <button class="btn square quiet" onclick={() => reloads++} disabled={!src} aria-label="Reload" data-tip={src ? "Reload" : "There is no page here to reload"}><Icon name="reload" /></button>
       {#if src}
-        <a class="btn" href={pageUrl(run, arm, viewing.page, false)} target="_blank" rel="noopener">Open in new tab</a>
+        <a class="btn square quiet" href={pageUrl(run, arm, viewing.page, false)} target="_blank" rel="noopener" aria-label="Open in new tab" data-tip="Open in new tab"><Icon name="external" /></a>
       {/if}
     </div>
   </header>
@@ -187,17 +188,17 @@
       <div class="empty">
         {#if !labels.includes(arm)}
           <h2 class="t-heading">This run has no arm named “{arm}”</h2>
-          <p class="t-body">Choose one of its arms above.</p>
+          <p class="t-body lede">Choose one of its arms above.</p>
         {:else if pages.length === 0}
           <h2 class="t-heading">{arm} made no HTML page to view live</h2>
           {#if run.outputs[arm]}
-            <p class="t-body">Its output is a document: <a class="inline-link" href={fileUrl(run.outputs[arm]!)} target="_blank" rel="noopener">open it in a new tab</a>.</p>
+            <p class="t-body lede">Its output is a document: <a class="inline-link" href={fileUrl(run.outputs[arm]!)} target="_blank" rel="noopener">open it in a new tab</a>.</p>
           {:else if captured}
-            <p class="t-body">Its captures are on the question page.</p>
+            <p class="t-body lede">Its captures are on the question page.</p>
           {/if}
         {:else}
           <h2 class="t-heading">{arm} has no page named {file}</h2>
-          <p class="t-body"><button class="inline-link" onclick={() => go({ page: pages[0] })}>Show {pages[0]}</button>{pages.length > 1 ? ", or choose a page above" : ""}.</p>
+          <p class="t-body lede"><button class="inline-link" onclick={() => go({ page: pages[0] })}>Show {pages[0]}</button>{pages.length > 1 ? ", or choose a page above" : ""}.</p>
         {/if}
       </div>
     {/if}
@@ -230,11 +231,9 @@
     padding: var(--s-2) var(--s-4);
     border-bottom: 1px solid var(--hairline);
   }
-  .group { display: flex; align-items: center; gap: var(--s-2); min-width: 0; }
   .arms select { max-width: 240px; }
   .pages { flex: 1; }
   .pages select { max-width: 360px; }
-  .actions { margin-left: auto; }
 
   .notes {
     display: grid;
@@ -245,8 +244,7 @@
   .notes p { max-width: 110ch; }
 
   .stage { position: relative; flex: 1; min-height: 0; display: flex; justify-content: center; }
-  /* A page that paints no ground of its own expects the browser's white. */
-  iframe { flex: 1; min-width: 0; height: 100%; border: none; background: #fff; }
+  iframe { flex: 1; min-width: 0; height: 100%; border: none; background: var(--page-ground); }
   .phone { padding: var(--s-4) 0; }
   .phone iframe {
     flex: 0 1 390px;
@@ -263,10 +261,9 @@
     pointer-events: none;
   }
   .empty { align-self: center; display: grid; gap: var(--s-2); max-width: 52ch; padding: var(--s-5); text-align: center; }
-  .empty p { color: var(--muted); }
 
   /* Narrow: a frame this wide is already a phone's, so the width switch goes. */
-  @media (max-width: 560px) {
+  @media (max-width: 640px) {
     /* Two rows: close and the arm, then the page and its actions. */
     .bar { padding: var(--s-2) var(--s-3); gap: var(--s-2); }
     .device { display: none; }

@@ -3,9 +3,10 @@
   import { listHref } from "../lib/home.svelte";
   import type { Experiment } from "../lib/types";
   import DeleteButton from "./DeleteButton.svelte";
+  import Icon from "./Icon.svelte";
 
-  // What you can do with the run on screen: its report is the page's one
-  // primary action.
+  // What you can do with the run on screen, as quiet icons: the top bar's
+  // idiom for chrome, so they never rival the results.
   let { run, single }: { run: Experiment; single: boolean } = $props();
 
   let revealError = $state<string | null>(null);
@@ -19,17 +20,18 @@
   }
 </script>
 
-<div class="actions">
+<div class="actions tips-end flush-end">
   {#if run.report}
-    <a class="btn btn-primary" href={fileUrl(run.report)} target="_blank" rel="noopener">Open report</a>
+    <a class="btn square quiet" href={fileUrl(run.report)} target="_blank" rel="noopener" aria-label="Open report" data-tip="Open report"><Icon name="report" /></a>
   {/if}
-  <button class="btn" onclick={revealFolder}>Show in Finder</button>
+  <button class="btn square quiet" onclick={revealFolder} aria-label="Show in Finder" data-tip="Show in Finder"><Icon name="folder" /></button>
   <DeleteButton
     name={run.result?.name ?? run.name}
     path={run.path}
     consequence={`${single ? "The archived result" : "This run's archived result"}, its captures and outputs, and the runner's record of it are removed.${single ? "" : " Other runs in the series are kept."}`}
     label={single ? "Delete" : "Delete run"}
     onDeleted={() => (location.hash = listHref())}
+    icon
   />
   {#if revealError}<p class="t-meta tone-danger error" role="alert">{revealError}</p>{/if}
 </div>

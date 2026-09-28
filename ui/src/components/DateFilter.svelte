@@ -1,5 +1,6 @@
 <script lang="ts">
   import { ANY_DATE, DATE_PRESETS, type DateFilter, dateLabel } from "../lib/results";
+  import Icon from "./Icon.svelte";
   import Menu from "./Menu.svelte";
   import MenuChoice from "./MenuChoice.svelte";
 
@@ -26,7 +27,7 @@
 </script>
 
 <span class="date-filter">
-  <Menu bind:this={menu} label="Newest run date: {dateLabel(value)}" title="Filter by each question's newest run" role="dialog" buttonClass="btn quiet{active ? ' active' : ''}" chevron>
+  <Menu bind:this={menu} label="Newest run date: {dateLabel(value)}" tip="Filter by each question's newest run" role="dialog" buttonClass="btn quiet{active ? ' active' : ''}" chevron>
     {#snippet button()}{dateLabel(value)}{/snippet}
     {#snippet children(close)}
       <p class="menu-note">By each question's newest run</p>
@@ -50,17 +51,16 @@
     {/snippet}
   </Menu>
   {#if active}
-    <button class="btn square quiet clear" aria-label="Clear the date filter" title="Clear the date filter" onclick={clear}>
-      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" /></svg>
+    <button class="btn square quiet clear" aria-label="Clear the date filter" data-tip="Clear the date filter" onclick={clear}>
+      <Icon name="close" />
     </button>
   {/if}
 </span>
 
 <style>
   .date-filter { display: inline-flex; align-items: center; }
-  .date-filter :global(.btn.active) { color: var(--ink); font-weight: 600; }
   .clear { margin-left: calc(-1 * var(--s-1)); }
-  .custom { display: grid; gap: var(--s-2); padding: var(--s-1) var(--s-2) var(--s-2); }
+  .custom { display: grid; gap: var(--s-2); padding: var(--s-1) var(--s-2) var(--s-2) var(--menu-inset); }
   .custom label { display: grid; grid-template-columns: 40px 1fr; align-items: center; gap: var(--s-2); }
   .custom .field { width: 100%; min-width: 0; }
 </style>

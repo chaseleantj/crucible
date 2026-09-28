@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
+  import Icon from "./Icon.svelte";
 
   // A button that opens a small panel under it: a menu of choices, or a form
   // as small (the date filter's range). The browser's popover does the
@@ -9,7 +10,7 @@
   // caller renders; `close` returns focus to the button.
   let {
     label,
-    title,
+    tip,
     buttonClass = "btn quiet",
     align = "start",
     role = "menu",
@@ -19,7 +20,7 @@
   }: {
     /** The button's accessible name, when its content is not enough. */
     label?: string;
-    title?: string;
+    tip?: string;
     buttonClass?: string;
     /** Which edge of the button the panel lines up with. */
     align?: "start" | "end";
@@ -127,26 +128,25 @@
 <button
   bind:this={trigger}
   class={buttonClass}
-  class:open
   popovertarget="menu-{id}"
   aria-haspopup={role}
   aria-expanded={open}
   aria-controls="menu-{id}"
   aria-label={label}
-  {title}
+  data-tip={tip}
   onkeydown={onTriggerKey}
 >
   {@render button()}
-  {#if chevron}<svg class="chevron" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6.5 8 10.5 12 6.5" /></svg>{/if}
+  {#if chevron}<Icon name="chevron-down" size={12} class="chevron" />{/if}
 </button>
 
 <div
   bind:this={panel}
   id="menu-{id}"
-  class="menu surface"
+  class="menu overlay"
   popover="auto"
   {role}
-  aria-label={label ?? title}
+  aria-label={label ?? tip}
   tabindex="-1"
   {ontoggle}
   onkeydown={onPanelKey}
@@ -154,43 +154,3 @@
 >
   {@render children(close)}
 </div>
-
-<style>
-  .menu {
-    position: fixed;
-    inset: auto;
-    margin: 0;
-    min-width: 168px;
-    max-width: calc(100vw - 16px);
-    padding: var(--s-1);
-    overflow: auto;
-    color: var(--ink);
-    border-color: var(--hairline-strong);
-    border-radius: var(--radius-small);
-    box-shadow: var(--shadow-dialog);
-  }
-  .menu:focus-visible { outline: none; }
-  .open { color: var(--ink); background: var(--surface-hover); }
-  .chevron { margin-left: calc(-1 * var(--s-1)); }
-
-  /* A choice: a full-width row, its check in a fixed slot so the words align. */
-  .menu :global(.menu-item) {
-    display: flex;
-    align-items: center;
-    gap: var(--s-2);
-    width: 100%;
-    min-height: var(--control);
-    padding: 0 var(--s-3) 0 var(--s-2);
-    border-radius: var(--radius-control);
-    font: var(--text-meta);
-    color: var(--ink);
-    text-align: left;
-    white-space: nowrap;
-  }
-  .menu :global(.menu-item:hover), .menu :global(.menu-item:focus-visible) { background: var(--surface-hover); outline: none; }
-  .menu :global(.menu-item .check) { flex: none; width: 14px; visibility: hidden; }
-  .menu :global(.menu-item[aria-checked="true"] .check) { visibility: visible; }
-  .menu :global(.menu-item[aria-checked="true"]) { font-weight: 600; }
-  .menu :global(.menu-note) { padding: var(--s-2) var(--s-3) var(--s-1) var(--s-2); color: var(--muted); font: var(--text-meta); }
-  .menu :global(.menu-rule) { height: 1px; margin: var(--s-1) 0; background: var(--hairline); }
-</style>

@@ -12,7 +12,7 @@
 
 <article class="surface card" aria-label={run.name}>
   <header class="head">
-    <div class="title">
+    <div class="stack title">
       <h3 class="t-heading">{run.name}</h3>
       <p class="t-meta">
         {#if tone === "danger"}<span class="tone-danger">Needs attention</span> · {:else if tone === "warn"}<span class="tone-warn">Slow</span> · {/if}
@@ -23,7 +23,7 @@
       {#each steps as step (step.label)}
         <li class={step.state} aria-current={step.state === "current" || step.state === "waiting" ? "step" : undefined}>
           <span class="marker" aria-hidden="true"></span>
-          <span class="t-meta">{step.label}{#if step.state === "waiting"}<span class="sr-only">, waiting</span>{:else if step.state === "done"}<span class="sr-only">, done</span>{/if}</span>
+          <span class={step.state === "current" || step.state === "waiting" ? "t-strong" : "t-meta"}>{step.label}{#if step.state === "waiting"}<span class="sr-only">, waiting</span>{:else if step.state === "done"}<span class="sr-only">, done</span>{/if}</span>
         </li>
       {/each}
     </ol>
@@ -62,9 +62,9 @@
         <span class="clip" title={status.text}>{status.text}</span>
       </span>
     </td>
-    <td class="num">{agent.elapsedMs === null ? "—" : duration(agent.elapsedMs)}</td>
-    <td class="num">{agent.state === "ready" ? "—" : agent.toolCalls}</td>
-    <td class="num">
+    <td class="num" class:dim={agent.elapsedMs === null}>{agent.elapsedMs === null ? "—" : duration(agent.elapsedMs)}</td>
+    <td class="num" class:dim={agent.state === "ready"}>{agent.state === "ready" ? "—" : agent.toolCalls}</td>
+    <td class="num" class:dim={!agent.lastActivityAt}>
       {#if agent.lastActivityAt}<span title={exact(agent.lastActivityAt)}>{ago(agent.lastActivityAt, now)}</span>{:else}—{/if}
     </td>
   </tr>
@@ -73,14 +73,14 @@
 <style>
   .card { padding: var(--s-4) var(--s-4) var(--s-2); min-width: 0; }
   .head { display: flex; align-items: flex-start; gap: var(--s-5); margin-bottom: var(--s-3); }
-  .title { flex: 1; min-width: 0; display: grid; gap: 2px; }
+  .title { flex: 1; }
 
   /* Produce, judge, report: done steps filled, the current one in ink, the rest hollow. */
   .steps { list-style: none; display: flex; align-items: center; flex: none; padding-top: 2px; }
   .steps li { display: flex; align-items: center; gap: var(--s-2); }
   .steps li + li::before {
     content: "";
-    width: 32px;
+    width: var(--s-6);
     height: 1px;
     margin: 0 var(--s-1);
     background: var(--hairline-strong);
@@ -89,12 +89,10 @@
   .done .marker { background: var(--faint); }
   .current .marker { background: var(--ink); border-color: var(--ink); }
   .waiting .marker { border-color: var(--ink); }
-  .current .t-meta, .waiting .t-meta { color: var(--ink); font-weight: 600; }
 
   td { vertical-align: middle; }
   .agent { width: 112px; color: var(--muted); }
   .status { display: inline-flex; align-items: center; gap: var(--s-2); min-width: 0; max-width: 100%; }
-  .status.tone-done { color: var(--muted); }
   th:nth-child(3), td:nth-child(3) { width: 72px; }
   th:nth-child(4), td:nth-child(4) { width: 96px; }
   th:nth-child(5), td:nth-child(5) { width: 112px; }
@@ -105,6 +103,6 @@
   @media (max-width: 520px) {
     .agent { width: auto; white-space: nowrap; }
     th:nth-child(n + 3), td:nth-child(n + 3) { width: auto; }
-    .steps li + li::before { width: 20px; }
+    .steps li + li::before { width: var(--s-4); }
   }
 </style>
