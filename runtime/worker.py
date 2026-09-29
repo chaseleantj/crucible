@@ -20,6 +20,9 @@ RUNTIME = Path(__file__).resolve().parent
 STATE = Path.home() / ".local/state/crucible/harbor"
 GUEST_WORKSPACE = "/workspace"
 CLEANUP_SECONDS = 20
+OUTPUT_READ_TIMEOUT_SECONDS = 30
+OUTPUT_READ_ATTEMPTS = 3
+OUTPUT_READ_RETRY_SECONDS = 1
 OWNED_NAME = re.compile(r"^crucible-[a-f0-9]{32}$")
 
 
@@ -178,6 +181,73 @@ ip6tables -A CRUCIBLE -d ff00::/8 -j REJECT
 """
 
 
+CGROUP_ROOT = "/sys/fs/cgroup"
+WORKLOAD_CGROUP = CGROUP_ROOT + "/crucible-workload"
+MEMORY_RESERVE_BYTES = 512 * 1024 * 1024
+
+
+def memory_provision_script(memory_mb):
+    return f"""import json
+from pathlib import Path
+root = Path({CGROUP_ROOT!r})
+if 'memory' not in (root / 'cgroup.controllers').read_text().split():
+    raise RuntimeError('Memory isolation requires a writable cgroup v2 memory controller')
+supervisor = root / 'crucible-supervisor'
+supervisor.mkdir()
+# Snapshot before moving: mutating cgroup.procs while iterating skips PIDs.
+for pid in (root / 'cgroup.procs').read_text().split():
+    try:
+        (supervisor / 'cgroup.procs').write_text(pid)
+    except ProcessLookupError:
+        pass
+(root / 'cgroup.subtree_control').write_text('+memory')
+total = int(next(line.split()[1] for line in Path('/proc/meminfo').read_text().splitlines() if line.startswith('MemTotal:'))) * 1024
+total = min(total, {memory_mb!r} * 1024 * 1024)
+limit = total - min({MEMORY_RESERVE_BYTES}, total // 4)
+workload = Path({WORKLOAD_CGROUP!r})
+workload.mkdir()
+(workload / 'memory.max').write_text(str(limit))
+(workload / 'memory.swap.max').write_text('0')
+(workload / 'memory.oom.group').write_text('1')
+(workload / 'cgroup.subtree_control').write_text('+memory')
+(workload / 'cgroup.kill').write_text('1')
+(workload / 'memory.peak').read_text()
+print(json.dumps({{'limitBytes': limit}}))
+"""
+
+
+def execution_script(directory, cgroup, command, timeout, env):
+    agent_env = shlex.join(["/usr/bin/env", *[f"{key}={value}" for key, value in env.items()], "bash", "-c", command])
+    restricted = "exec /usr/bin/setpriv --reuid=1000 --regid=1000 --init-groups --bounding-set=-all --inh-caps=-all --ambient-caps=-all --no-new-privs " + agent_env
+    enter = f"echo $$ >{cgroup}/cgroup.procs || exit 125; test ! -e {directory}/cancelled || exit 125; " + restricted
+    return f"""import json, os, signal, subprocess
+from pathlib import Path
+root = Path({directory!r})
+group = Path({cgroup!r})
+timed_out = False
+with (root / 'stdin').open('rb') as stdin, (root / 'stdout').open('wb') as stdout, (root / 'stderr').open('wb') as stderr:
+    child = subprocess.Popen(['/bin/bash', '-c', {enter!r}], stdin=stdin, stdout=stdout, stderr=stderr, start_new_session=True)
+    try:
+        code = child.wait(timeout={timeout!r})
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        try:
+            os.killpg(child.pid, signal.SIGTERM)
+            child.wait(timeout=3)
+        except (ProcessLookupError, subprocess.TimeoutExpired):
+            pass
+    finally:
+        # Kill the entire workload, including detached grandchildren.
+        (group / 'cgroup.kill').write_text('1')
+        # A very short deadline can expire before the child enters its cgroup.
+        child.kill()
+        code = child.wait()
+events = dict(line.split() for line in (group / 'memory.events').read_text().splitlines())
+oom = int(events['oom_kill']) > 0
+(root / 'result').write_text(json.dumps({{'code': 128 - code if code < 0 else code, 'timedOut': timed_out and not oom, 'memory': {{'limitBytes': int((group / 'memory.max').read_text()), 'peakBytes': int((group / 'memory.peak').read_text()), 'oomKilled': oom}}}}))
+"""
+
+
 class Worker:
     def __init__(self):
         self.environment = None
@@ -186,6 +256,7 @@ class Worker:
         self.slot = Slot()
         self.scratch = tempfile.TemporaryDirectory(prefix="crucible-harbor-")
         self.host_address = None
+        self.memory_limit = None
 
     async def checked(self, command, **kwargs):
         kwargs.setdefault("timeout_sec", 30)
@@ -226,6 +297,8 @@ class Worker:
         )
         await self.environment.start(force_build=False)
         await self.checked(firewall_script(), user="root")
+        memory = await self.checked("/usr/bin/python3 -I -c " + shlex.quote(memory_provision_script(request["memoryMb"])), user="root")
+        self.memory_limit = json.loads(memory.stdout)["limitBytes"]
         route = await self.checked("ip -4 route show default", user="root")
         match = re.search(r"\bvia\s+(\S+)", route.stdout or "")
         if not match:
@@ -258,40 +331,52 @@ class Worker:
     async def forward(self, port):
         if not isinstance(port, int) or not 1 <= port <= 65535:
             raise ValueError("Invalid broker port")
-        command = f"nohup python3 /opt/crucible/relay.py {shlex.quote(self.host_address)} {port} >/run/crucible/relay-{port}.log 2>&1 </dev/null &"
+        command = f"nohup /usr/bin/python3 -I /opt/crucible/relay.py {shlex.quote(self.host_address)} {port} >/run/crucible/relay-{port}.log 2>&1 </dev/null &"
         await self.checked(command, user="root")
-        await self.checked(f"python3 -c 'import socket,time; time.sleep(0.15); s=socket.create_connection((\"127.0.0.1\",{port}),timeout=3); s.close()'", user="root")
+        await self.checked(f"/usr/bin/python3 -I -c 'import socket,time; time.sleep(0.15); s=socket.create_connection((\"127.0.0.1\",{port}),timeout=3); s.close()'", user="root")
         return {"port": port}
+
+    async def read_output(self, directory, stream, offset):
+        script = f"import base64,pathlib; p=pathlib.Path({directory + '/' + stream!r}); f=p.open('rb') if p.exists() else None; f.seek({offset}) if f else None; print(base64.b64encode(f.read(262144) if f else b'').decode())"
+        for attempt in range(OUTPUT_READ_ATTEMPTS):
+            try:
+                result = await self.checked("/usr/bin/python3 -I -c " + shlex.quote(script), user="root", timeout_sec=OUTPUT_READ_TIMEOUT_SECONDS)
+                return base64.b64decode((result.stdout or "").strip())
+            except RuntimeError as error:
+                # Harbor reports its transport timeout as RuntimeError. Only
+                # these read-only polls are safe to repeat at the same offset.
+                if str(error) != f"Command timed out after {OUTPUT_READ_TIMEOUT_SECONDS} seconds":
+                    raise
+                if attempt + 1 == OUTPUT_READ_ATTEMPTS:
+                    raise RuntimeError(
+                        f"Reading {stream} from VM {self.name} timed out after {OUTPUT_READ_ATTEMPTS} attempts. "
+                        "Check the VM's vminitd.log for memory exhaustion or container failures; "
+                        "browser-heavy tasks may need a higher runtime.memoryMb."
+                    ) from error
+                await asyncio.sleep(OUTPUT_READ_RETRY_SECONDS)
 
     async def execute(self, request):
         identifier = request["id"]
         directory = f"/tmp/crucible-exec-{uuid.uuid4().hex}"
-        await self.checked(f"mkdir -m 700 {directory} && chown 1000:1000 {directory}", user="root")
+        if self.memory_limit is None:
+            raise RuntimeError("Guest memory isolation was not provisioned")
+        cgroup = f"{WORKLOAD_CGROUP}/{uuid.uuid4().hex}"
+        await self.checked(f"set -eu; mkdir -m 700 {directory}; mkdir {cgroup}; echo {self.memory_limit} >{cgroup}/memory.max; echo 0 >{cgroup}/memory.swap.max; echo 1 >{cgroup}/memory.oom.group; test -w {cgroup}/cgroup.kill; test -r {cgroup}/memory.peak", user="root")
         stdin_path = Path(self.scratch.name) / "stdin"
         stdin_path.write_text(request.get("stdin", ""))
         stdin_path.chmod(0o600)
         await self.environment.upload_file(stdin_path, directory + "/stdin")
         stdin_path.unlink()
-        await self.checked(f"chown -R 1000:1000 {directory}", user="root")
         args = request.get("args")
         command = shlex.join([request["command"], *args]) if args is not None else request["command"]
         timeout = request.get("timeoutMs", 3600000) / 1000
-        script = f"""set +e
-setsid timeout --signal=TERM --kill-after=3s {timeout}s bash -c {shlex.quote(command)} <{directory}/stdin >{directory}/stdout 2>{directory}/stderr &
-child=$!
-wait "$child"
-result=$?
-kill -TERM -- -"$child" 2>/dev/null || true
-sleep 0.1
-kill -KILL -- -"$child" 2>/dev/null || true
-exit "$result"
-"""
         command_env = {"HOME": "/home/agent", **request.get("env", {})}
-        restricted = "setpriv --reuid=1000 --regid=1000 --init-groups --bounding-set=-all --inh-caps=-all --ambient-caps=-all --no-new-privs bash -c " + shlex.quote(script)
-        run = asyncio.create_task(self.environment.exec(restricted, cwd=request.get("cwd", GUEST_WORKSPACE), env=command_env, user="root"))
+        script = execution_script(directory, cgroup, command, timeout, command_env)
+        run = asyncio.create_task(self.environment.exec("/usr/bin/python3 -I -c " + shlex.quote(script), cwd=request.get("cwd", GUEST_WORKSPACE), user="root"))
         offsets = {"stdout": 0, "stderr": 0}
         outputs = {"stdout": [], "stderr": []}
         decoders = {key: codecs.getincrementaldecoder("utf-8")("replace") for key in offsets}
+        completed = False
         try:
             while True:
                 # Only an empty poll begun after exit proves both streams are
@@ -299,9 +384,7 @@ exit "$result"
                 finished_before_read = run.done()
                 received = False
                 for stream in offsets:
-                    read_script = f"import base64,pathlib; p=pathlib.Path({directory + '/' + stream!r}); f=p.open('rb') if p.exists() else None; f.seek({offsets[stream]}) if f else None; print(base64.b64encode(f.read(262144) if f else b'').decode())"
-                    result = await self.checked("python3 -c " + shlex.quote(read_script), user="root")
-                    raw = base64.b64decode((result.stdout or "").strip())
+                    raw = await self.read_output(directory, stream, offsets[stream])
                     received = received or bool(raw)
                     offsets[stream] += len(raw)
                     data = decoders[stream].decode(raw)
@@ -310,18 +393,32 @@ exit "$result"
                         emit({"id": identifier, "event": stream, "data": data})
                 if finished_before_read and not received:
                     result = await run
-                    await self.checked("pkill -TERM -u 1000 || true; sleep 0.1; pkill -KILL -u 1000 || true", user="root")
+                    if result.return_code:
+                        raise RuntimeError(f"Guest execution supervisor failed: {result.stderr or result.stdout or result.return_code}")
+                    status = await self.checked(f"cat {directory}/result", user="root")
+                    status = json.loads(status.stdout)
+                    completed = True
                     for stream in offsets:
                         tail = decoders[stream].decode(b"", final=True)
                         if tail:
                             outputs[stream].append(tail)
                             emit({"id": identifier, "event": stream, "data": tail})
-                    return {"code": result.return_code, "timedOut": result.return_code in (124, 137), **{k: "".join(v) for k, v in outputs.items()}}
+                    return {**status, **{k: "".join(v) for k, v in outputs.items()}}
                 await asyncio.sleep(0.2)
         finally:
-            if not run.done():
-                run.cancel()
-                await asyncio.gather(run, return_exceptions=True)
+            pending_error = sys.exception()
+            try:
+                if not completed:
+                    # Host cancellation or failed polling must not leave browsers running.
+                    await self.checked(f"touch {directory}/cancelled; echo 1 >{cgroup}/cgroup.kill", user="root")
+            except Exception as error:
+                if pending_error is None:
+                    raise
+                print(f"Workload cleanup failed: {error}", file=sys.stderr)
+            finally:
+                if not run.done():
+                    run.cancel()
+                    await asyncio.gather(run, return_exceptions=True)
 
     async def collect(self, relative):
         target = workspace_path(self.workspace, relative)

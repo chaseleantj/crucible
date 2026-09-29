@@ -24,6 +24,18 @@ Omitted fields keep their defaults. These values must be positive integers; conc
 
 For small tasks, `cpus: 1` and `memoryMb: 2048` may suffice. Increasing concurrency to 10 configures 40 GiB of guest memory at the default size, or 20 GiB at 2048 MiB. Allow room for macOS, other apps, and VM overhead, and measure the actual workload before increasing concurrency. Crucible does not automatically choose resources based on the task.
 
+For browser-heavy 3D tasks, start with `memoryMb: 8192` per VM. Multiple Chromium captures using software rendering can exhaust a 4 GiB guest. Producer and judge instructions ask agents to capture sequentially and close each browser before opening the next; the memory limit below is enforced even if an agent ignores that guidance.
+
+### Memory exhaustion and recovery
+
+Each setup or agent command and all its descendants share a root-owned Linux memory cgroup. Crucible reserves the smaller of 512 MiB or 25% of guest RAM outside that workload limit for supervision and recovery. Workloads cannot increase their own limit or move themselves outside it. Provisioning fails if memory enforcement is unavailable.
+
+If the workload exceeds its limit, Linux kills the workload group while the supervisor remains able to retrieve files. Crucible reads kernel OOM counters and peak usage, reports an explicit out-of-memory failure, and saves `memory.json` in the producer's or judge's agent log directory. Setup commands save numbered `setup-memory-*.json` records. An OOM is never treated as a timeout or a successful result, even when the agent wrote output or emitted a completion event.
+
+Failed execution triggers partial-output collection before VM cleanup. A `recovery-*` directory beside the agent logs retains the output and `failure.json` across later relaunches. If collection fails, the diagnosis remains with `collected: false`. These snapshots are unfinished work and are not scored. Host runtime configuration and frozen judge inputs are excluded from judge recovery snapshots.
+
+Log-read transport timeouts have bounded retries; they are separate from the producer's time budget and from confirmed OOM. If a VM is still present, `container logs --boot <name>` exposes its kernel log. Automatic model reruns and memory increases are not enabled: adjust the experiment's resources and prepare a new run so its recorded configuration describes the comparison accurately.
+
 ## Isolation and credentials
 
 Harbor creates a disposable Linux guest for each producer and judge. Crucible uploads the selected project and that arm's frozen skills and inputs, then retrieves outputs before deleting the guest. No host home, project checkout, or sibling arm is mounted. The guest is the outer execution boundary. Native automatic permission review is also enabled for producers and judges:

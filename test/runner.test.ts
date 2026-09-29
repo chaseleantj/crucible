@@ -44,3 +44,16 @@ test("a timed-out producer counts as complete only if it changed the source", ()
   assert.equal(crash.state, "failed");
   assert.equal(crash.error, "Producer exited with 1: API error");
 });
+
+test("kernel-confirmed OOM never counts as a completed or timed-out producer", () => {
+  const result = {
+    succeeded: true, timedOut: true, strayProcesses: false, terminalEvent: true,
+    exitCode: 137, signal: null, memory: { limitBytes: 512 * 1024 ** 2, peakBytes: 513 * 1024 ** 2, oomKilled: true },
+  };
+  for (const changed of [false, true]) {
+    const outcome = completionOutcome(result, changed);
+    assert.equal(outcome.state, "failed");
+    assert.equal(outcome.timedOut, undefined);
+    assert.match(outcome.error!, /out of memory.*limit 512 MiB, peak 513 MiB/);
+  }
+});

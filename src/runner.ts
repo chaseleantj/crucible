@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, stat } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { tmpdir } from "node:os";
 import { authProblem, prepareRuntimeDirectories } from "./adapters.js";
-import { executeAgent, holdSystemAwake, processMatches, processStartTime, runSetup, terminateProcessGroup, type AgentExecutionResult } from "./agent.js";
+import { BROWSER_MEMORY_GUIDANCE, executeAgent, holdSystemAwake, processMatches, processStartTime, runSetup, terminateProcessGroup, type AgentExecutionResult } from "./agent.js";
 import { auditRun } from "./audit.js";
 import { armChanges, recordBaseline } from "./baseline.js";
 import { armFor, assertGuestCompatible, producerFor, runtimeFor, taskFor } from "./config.js";
@@ -10,7 +10,8 @@ import { UserError, errorMessage } from "./errors.js";
 import { collectProjectInstructions, copyTree, makeReadOnly, removeTree } from "./files.js";
 import { agentAtWork } from "./health.js";
 import { readJson, writeJson } from "./json.js";
-import { harborChecks, openHarbor, type HarborSession } from "./harbor.js";
+import { harborChecks, memoryFailure, openHarbor, type HarborSession } from "./harbor.js";
+import { collectAgentOutput } from "./recovery.js";
 import { skillLoader, type SkillCatalogEntry } from "./skills.js";
 import { subagentLoader, type SubagentCatalogEntry } from "./subagents.js";
 import { appendRunEvent, readRunState, resetProducer, setRunState, trackAgent, updateJudge, updateProducer } from "./state.js";
@@ -132,6 +133,9 @@ export async function openAgentSession(run: ResolvedRun, id: string, directory: 
     await uploadGuestCatalogs(session, directory);
     const binary = agent === "cursor" ? "cursor-agent" : agent;
     const readiness = await session.execute({ command: binary, args: ["--version"], cwd: "/workspace", timeoutMs: 30_000 });
+    if (readiness.memory) await writeJson(join(logDir, "readiness-memory.json"), readiness.memory);
+    const oom = memoryFailure(readiness.memory);
+    if (oom) throw new UserError(oom);
     if (readiness.code !== 0) throw new UserError(`Guest ${agent} CLI is unavailable: ${readiness.stderr}`);
     return session;
   } catch (error) {
@@ -198,7 +202,7 @@ async function runProducer(run: ResolvedRun, producerId: string): Promise<string
     }
     session = await openAgentSession(run, producerId, producerDir, config.agent);
     const setupFailure = await runSetup({ run, id: producerId, directory: producerDir, cwd: sourceDir, runtimeDir, logDir, config, session });
-    if (setupFailure) return await fail(setupFailure);
+    if (setupFailure) throw new UserError(setupFailure);
     // Freeze the baseline after setup, matching the files the agent will see.
     await session.collect("source");
     await recordBaseline(run, producerId);
@@ -207,9 +211,22 @@ async function runProducer(run: ResolvedRun, producerId: string): Promise<string
       prompt: await producerPrompt(run, producerId), config, session,
       ...trackAgent(run.runDir, producerId, (patch) => updateProducer(run.runDir, producerId, patch)),
     });
-    await session.collect("source");
+    const oom = memoryFailure(result.memory);
+    await collectAgentOutput(session, producerDir, logDir, "source", oom && result.memory ? { error: oom, memory: result.memory } : undefined);
   } catch (error) {
-    return await fail(errorMessage(error));
+    let message = errorMessage(error);
+    if (session) {
+      try {
+        await collectAgentOutput(session, producerDir, logDir, "source", { error: message });
+        await appendRunEvent(run.runDir, {
+          time: new Date().toISOString(), producer: producerId, kind: "output.recovered",
+          summary: "Partial source collected after runtime failure; producer remains failed",
+        });
+      } catch (collectionError) {
+        message += `; partial output collection failed: ${errorMessage(collectionError)}`;
+      }
+    }
+    return await fail(message);
   } finally {
     await session?.close();
   }
@@ -245,9 +262,11 @@ async function runProducer(run: ResolvedRun, producerId: string): Promise<string
 // producer that timed out without touching the source has nothing to judge,
 // so it fails and `crucible start` can relaunch it.
 export function completionOutcome(
-  result: Pick<AgentExecutionResult, "succeeded" | "timedOut" | "strayProcesses" | "terminalEvent" | "terminalSummary" | "exitCode" | "signal">,
+  result: Pick<AgentExecutionResult, "succeeded" | "timedOut" | "strayProcesses" | "terminalEvent" | "terminalSummary" | "exitCode" | "signal" | "memory">,
   changedSource: boolean,
 ): { state: "complete" | "failed"; timedOut?: boolean; error?: string } {
+  const oom = memoryFailure(result.memory);
+  if (oom) return { state: "failed", error: oom };
   if (result.succeeded) return { state: "complete" };
   if (result.timedOut && changedSource) return { state: "complete", timedOut: true };
   // The agent's own last words ("Not logged in", an API error) name the cause
@@ -279,6 +298,7 @@ async function producerPrompt(run: ResolvedRun, producerId: string): Promise<str
     taskFor(run.config, armFor(run.config, run.assignment.arms[producerId]!)),
     "",
     "You start in /workspace/source. Work only inside it; do not modify files outside that directory.",
+    BROWSER_MEMORY_GUIDANCE,
     "",
     "Project instructions:",
     projectInstructions || "No project instructions were selected.",
