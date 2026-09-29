@@ -2,7 +2,9 @@ import { randomBytes } from "node:crypto";
 import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { assertGuestCompatible } from "./config.js";
-import { executeAgent, type AgentExecutionResult } from "./agent.js";
+import { BROWSER_MEMORY_GUIDANCE, executeAgent, type AgentExecutionResult } from "./agent.js";
+import { memoryFailure } from "./harbor.js";
+import { collectAgentOutput } from "./recovery.js";
 import { UserError, errorMessage } from "./errors.js";
 import { buildManifest, copyTree, makeReadOnly, removeTree, writePrivateFile } from "./files.js";
 import { readJson, writeJson } from "./json.js";
@@ -88,7 +90,7 @@ export async function judgeRun(run: ResolvedRun): Promise<void> {
     throw error;
   }
   if ((await readRunState(run.runDir)).judge?.state === "stopped") return;
-  const failure = result.succeeded ? null : result.timedOut ? "timed out" : `exited with ${result.exitCode ?? result.signal}`;
+  const failure = memoryFailure(result.memory) ?? (result.succeeded ? null : result.timedOut ? "timed out" : `exited with ${result.exitCode ?? result.signal}`);
   await updateJudge(run.runDir, {
     state: failure ? "failed" : "complete",
     completedAt: result.completedAt,
@@ -111,9 +113,7 @@ export async function judgeRun(run: ResolvedRun): Promise<void> {
     usage: result.usage,
   });
   if (!result.succeeded) {
-    throw new UserError(result.timedOut
-      ? "Judge timed out; run crucible judge again"
-      : `Judge exited with ${result.exitCode ?? result.signal}; run crucible judge again`);
+    throw new UserError(`Judge ${failure}; run crucible judge again`);
   }
   let verdict: string;
   let structured: unknown;
@@ -145,6 +145,7 @@ async function serveAndJudge(
   tools: JudgeTools,
 ): Promise<AgentExecutionResult> {
   const session = await openAgentSession(run, judgeId, judgeDir, config.agent);
+  const logDir = join(run.runDir, "judge", "agent");
   try {
     const result = await executeAgent({
       run,
@@ -152,14 +153,22 @@ async function serveAndJudge(
       directory: judgeDir,
       cwd: judgeDir,
       runtimeDir: join(judgeDir, ".runtime"),
-      logDir: join(run.runDir, "judge", "agent"),
+      logDir,
       prompt: judgePrompt(run, "/workspace", letters, [], tools),
       config,
       session,
       ...trackAgent(run.runDir, judgeId, (patch) => updateJudge(run.runDir, patch)),
     });
-    await session.collect();
+    const oom = memoryFailure(result.memory);
+    await collectAgentOutput(session, judgeDir, logDir, ".", oom && result.memory ? { error: oom, memory: result.memory } : undefined);
     return result;
+  } catch (error) {
+    try {
+      await collectAgentOutput(session, judgeDir, logDir, ".", { error: errorMessage(error) });
+    } catch (collectionError) {
+      throw new UserError(`${errorMessage(error)}; partial output collection failed: ${errorMessage(collectionError)}`);
+    }
+    throw error;
   } finally {
     await session.close();
   }
@@ -209,6 +218,7 @@ export function judgePrompt(
     run.config.task,
     "",
     `Read the rubric at ${join(judgeDir, ".context", "rubric.md")}.`,
+    BROWSER_MEMORY_GUIDANCE,
     `The original input every output started from is at ${join(judgeDir, "input", "source")}. Use it to verify changes and factual claims; it is not another competing output.`,
     ...letters.map((letter) => `Output ${letter} is at ${join(judgeDir, "input", letter)}.`),
     ...served.map((output) => `Output ${output.name} is already served as static files at ${output.url} (its folder is the site root).`),

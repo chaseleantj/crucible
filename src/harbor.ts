@@ -37,6 +37,19 @@ export interface HarborResult {
   stdout: string;
   stderr: string;
   timedOut: boolean;
+  memory?: GuestMemory;
+}
+
+export interface GuestMemory {
+  limitBytes: number;
+  peakBytes: number;
+  oomKilled: boolean;
+}
+
+export function memoryFailure(memory: GuestMemory | undefined): string | null {
+  if (!memory?.oomKilled) return null;
+  const mib = (bytes: number) => Math.ceil(bytes / 1024 / 1024);
+  return `Guest ran out of memory (workload limit ${mib(memory.limitBytes)} MiB, peak ${mib(memory.peakBytes)} MiB). Reduce concurrent browser captures or increase runtime.memoryMb.`;
 }
 
 interface Pending {

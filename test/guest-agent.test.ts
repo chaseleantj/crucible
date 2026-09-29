@@ -57,6 +57,31 @@ test("runtime configuration maps capsule paths and rejects dependencies on the h
   assert.throws(() => guestPath("/tmp/capsule", "/tmp/other"), /outside/);
 });
 
+test("guest OOM overrides native success and timeout while persisting kernel memory evidence", async (t) => {
+  const directory = await tempDirectory(t);
+  setEnvironment(t, { OPENAI_API_KEY: "private-test-provider-key" });
+  const memory = { limitBytes: 512 * 1024 ** 2, peakBytes: 513 * 1024 ** 2, oomKilled: true };
+  const session = {
+    pid: process.pid, forwardPort: async (port: number) => port, upload: async () => {},
+    execute: async (command: HarborCommand) => {
+      await command.onStdout?.('{"type":"turn.completed","usage":{"input_tokens":3,"output_tokens":2}}\n');
+      return { code: 0, stdout: "", stderr: "", timedOut: true, memory };
+    },
+  } as unknown as HarborSession;
+  const logDir = join(directory, "logs");
+  const result = await executeAgent({
+    run: {} as ResolvedRun, id: "p-test", directory, cwd: directory,
+    runtimeDir: join(directory, ".runtime"), logDir,
+    prompt: "Draw", config: { agent: "codex", timeoutMs: 1000 }, session,
+  });
+  assert.equal(result.succeeded, false);
+  assert.equal(result.timedOut, false);
+  assert.match(result.terminalSummary!, /out of memory.*512 MiB/);
+  assert.deepEqual(result.memory, memory);
+  assert.deepEqual(JSON.parse(await readFile(join(logDir, "memory.json"), "utf8")), memory);
+  assert.ok(result.usage, "reported usage survives the failed run");
+});
+
 test("Cursor model discovery receives only the broker stand-in through native Linux token auth", async (t) => {
   const directory = await tempDirectory(t, "crucible-cursor-guest-");
   setEnvironment(t, { HOME: directory });

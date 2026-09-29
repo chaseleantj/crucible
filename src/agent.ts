@@ -5,10 +5,12 @@ import { promisify } from "node:util";
 import { adapterFor, armEnvironment, guestConfiguration, prepareRuntimeDirectories, scrubbedEnvironment } from "./adapters.js";
 import { UserError } from "./errors.js";
 import { writeJson } from "./json.js";
-import type { HarborSession } from "./harbor.js";
+import { memoryFailure, type GuestMemory, type HarborSession } from "./harbor.js";
 import type { NormalizedEvent, ProducerConfig, ResolvedRun } from "./types.js";
 
 const execFileAsync = promisify(execFile);
+
+export const BROWSER_MEMORY_GUIDANCE = "Run browser captures sequentially and close each browser before opening the next. All processes share one VM memory limit; parallel software-rendered 3D captures can exhaust it.";
 
 export interface AgentExecutionOptions {
   run: ResolvedRun;
@@ -32,6 +34,7 @@ export interface AgentExecutionResult {
   exitCode: number | null;
   signal: NodeJS.Signals | null;
   timedOut: boolean;
+  memory?: GuestMemory;
   terminalEvent: boolean;
   terminalSummary?: string;
   strayProcesses: boolean;
@@ -57,7 +60,9 @@ export async function runSetup(options: SetupOptions): Promise<string | null> {
         timeoutMs: options.config.timeoutMs,
       });
       sections.push(`$ ${setup}\n${result.stdout}${result.stderr}`);
-      if (result.code !== 0 || result.timedOut) failure = `Setup command ${result.timedOut ? "timed out" : `failed with ${result.code}`}: ${setup}`;
+      if (result.memory) await writeJson(join(options.logDir, `setup-memory-${sections.length}.json`), result.memory);
+      failure = memoryFailure(result.memory);
+      if (!failure && (result.code !== 0 || result.timedOut)) failure = `Setup command ${result.timedOut ? "timed out" : `failed with ${result.code}`}: ${setup}`;
     } catch (error) {
       failure = `Setup command failed: ${setup}: ${error instanceof Error ? error.message : error}`;
       sections.push(`$ ${setup}\n${failure}`);
@@ -92,6 +97,8 @@ export async function executeAgent(options: AgentExecutionOptions): Promise<Agen
       await options.session.upload(options.runtimeDir, "/workspace/.runtime");
       const result = await options.session.execute({ command: "cursor-agent", args: ["--list-models"], cwd: "/workspace", env: guestEnvironment(env, options.directory), timeoutMs: 30_000 });
       await writeJson(join(options.logDir, "model-discovery.json"), result);
+      const oom = memoryFailure(result.memory);
+      if (oom) throw new UserError(oom);
       if (result.code !== 0 || result.timedOut) throw new UserError(`Could not list Cursor models in guest${result.timedOut ? " (timed out)" : ""}: ${result.stderr}. See model-discovery.json in the agent logs.`);
       return result.stdout;
     },
@@ -147,11 +154,15 @@ export async function executeAgent(options: AgentExecutionOptions): Promise<Agen
       throw error;
     });
     if (pending) await recordLine(pending);
+    if (exit.memory) await writeJson(join(options.logDir, "memory.json"), exit.memory);
+    const outOfMemory = memoryFailure(exit.memory);
+    if (outOfMemory) terminalSummary = outOfMemory;
     const completedAt = new Date().toISOString();
     return {
-      succeeded: exit.code === 0 && !exit.timedOut && terminalEvent && !mcpFailed,
+      succeeded: exit.code === 0 && !exit.timedOut && !outOfMemory && terminalEvent && !mcpFailed,
       pid, startedAt, completedAt, exitCode: exit.code, signal: null,
-      timedOut: exit.timedOut, terminalEvent, ...(terminalSummary ? { terminalSummary } : {}),
+      timedOut: !outOfMemory && exit.timedOut, terminalEvent, ...(terminalSummary ? { terminalSummary } : {}),
+      ...(exit.memory ? { memory: exit.memory } : {}),
       strayProcesses: false, toolCalls,
       usage: adapter.collectUsage(await readFile(stdoutPath, "utf8").catch(() => "")),
     };
